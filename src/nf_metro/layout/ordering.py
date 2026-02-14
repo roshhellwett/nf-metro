@@ -1,0 +1,225 @@
+"""Track-per-line vertical ordering.
+
+Each metro line gets a dedicated horizontal track (Y position). Nodes on
+the main path of a line snap to its base track. Short branches (nodes
+whose predecessors are far from the line's base track) stay near their
+predecessors instead of jumping to a distant track.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+import networkx as nx
+
+from nf_metro.parser.model import MetroGraph
+
+
+def assign_tracks(
+    graph: MetroGraph,
+    layers: dict[str, int],
+    line_gap: float = 1.0,
+) -> dict[str, float]:
+    """Assign each station a track using the track-per-line strategy.
+
+    Args:
+        graph: The metro graph.
+        layers: Layer assignment from assign_layers().
+        line_gap: Fixed gap (in track units) between line base tracks.
+
+    Returns a dict mapping station_id -> track (float).
+    """
+    if not graph.lines:
+        return {sid: float(i) for i, sid in enumerate(graph.stations)}
+
+    G = nx.DiGraph()
+    for edge in graph.edges:
+        G.add_edge(edge.source, edge.target)
+    for sid in graph.stations:
+        if sid not in G:
+            G.add_node(sid)
+
+    line_order = list(graph.lines.keys())
+    line_priority = {lid: i for i, lid in enumerate(line_order)}
+
+    # Step 1: Determine primary line for each node
+    node_primary: dict[str, str | None] = {}
+    for sid in graph.stations:
+        node_lines = graph.station_lines(sid)
+        if node_lines:
+            node_primary[sid] = min(
+                node_lines, key=lambda l: line_priority.get(l, 999)
+            )
+        else:
+            node_primary[sid] = None
+
+    # Step 2: Fixed-gap base tracks per line
+    line_base: dict[str, float] = {}
+    for i, lid in enumerate(line_order):
+        line_base[lid] = i * line_gap
+
+    # Step 3: Group nodes by (layer, primary_line)
+    layer_line_groups: dict[tuple[int, str | None], list[str]] = defaultdict(list)
+    for sid in graph.stations:
+        layer_line_groups[(layers.get(sid, 0), node_primary[sid])].append(sid)
+
+    tracks: dict[str, float] = {}
+    max_layer = max(layers.values()) if layers else 0
+    orphan_track = len(line_order) * line_gap
+
+    for layer_idx in range(max_layer + 1):
+        for lid in line_order:
+            nodes = layer_line_groups.get((layer_idx, lid), [])
+            if not nodes:
+                continue
+
+            base = line_base[lid]
+
+            if len(nodes) == 1:
+                tracks[nodes[0]] = _place_single_node(
+                    nodes[0], base, line_gap, G, tracks, graph, layers,
+                )
+            else:
+                _place_fan_out(nodes, base, line_gap, G, tracks)
+
+        # Orphans (no line)
+        orphans = layer_line_groups.get((layer_idx, None), [])
+        for node in orphans:
+            tracks[node] = orphan_track
+            orphan_track += 1
+
+    return tracks
+
+
+def _is_diamond_node(
+    node: str,
+    layer: int,
+    G: nx.DiGraph,
+    layers: dict[str, int],
+    graph: MetroGraph | None = None,
+) -> bool:
+    """Check if node is part of a diamond (fork-join) pattern.
+
+    A diamond node shares the same predecessors with another node at
+    the same layer, both converge to at least one common successor,
+    AND both nodes carry the same set of metro lines (i.e. they are
+    alternative paths for the same lines, like FastP/TrimGalore).
+    Nodes on different lines that happen to share predecessors/successors
+    (like salmon_pseudo/kallisto) are NOT diamonds.
+    """
+    preds = set(G.predecessors(node))
+    succs = set(G.successors(node))
+    if not preds or not succs:
+        return False
+
+    node_lines = set(graph.station_lines(node)) if graph else set()
+
+    same_layer = [n for n, l in layers.items() if l == layer and n != node]
+    for other in same_layer:
+        if set(G.predecessors(other)) == preds and succs & set(G.successors(other)):
+            if graph:
+                other_lines = set(graph.station_lines(other))
+                if node_lines == other_lines:
+                    return True
+            else:
+                return True
+    return False
+
+
+def _predecessor_avg(node: str, G: nx.DiGraph, tracks: dict[str, float]) -> float | None:
+    """Average track position of a node's already-placed predecessors."""
+    preds = [p for p in G.predecessors(node) if p in tracks]
+    if not preds:
+        return None
+    return sum(tracks[p] for p in preds) / len(preds)
+
+
+def _place_single_node(
+    node: str,
+    base: float,
+    line_gap: float,
+    G: nx.DiGraph,
+    tracks: dict[str, float],
+    graph: MetroGraph | None = None,
+    layers: dict[str, int] | None = None,
+) -> float:
+    """Place a single node, choosing between line base track and predecessor proximity.
+
+    At divergence points (predecessor has more lines than this node),
+    snap to the line's base track so diverging branches fan out properly.
+    Exception: diamond (fork-join) patterns stay compact near the trunk.
+
+    Otherwise, if predecessors are close, snap to base. If far (a
+    side-branch deep in the graph), stay near predecessors.
+    """
+    pred_avg = _predecessor_avg(node, G, tracks)
+    if pred_avg is None:
+        return base
+
+    # Detect divergence: predecessor has more lines than this node
+    if graph is not None:
+        preds = list(G.predecessors(node))
+        node_lines = set(graph.station_lines(node))
+        pred_lines: set[str] = set()
+        for p in preds:
+            pred_lines.update(graph.station_lines(p))
+        if len(pred_lines) > len(node_lines):
+            # Check if this is a diamond (temporary fork-join)
+            node_layer = layers.get(node, 0) if layers else 0
+            if layers and _is_diamond_node(node, node_layer, G, layers, graph):
+                # Diamond: compress toward trunk for compact visual
+                return pred_avg + (base - pred_avg) * 0.25
+            else:
+                # Permanent divergence: snap to base track
+                return base
+
+    distance = abs(base - pred_avg)
+    if distance <= line_gap:
+        # Close enough - snap to base track
+        return base
+    else:
+        # Side-branch: stay near predecessors, nudge toward base
+        direction = 1.0 if base > pred_avg else -1.0
+        return pred_avg + direction * 1.0
+
+
+def _place_fan_out(
+    nodes: list[str],
+    base: float,
+    line_gap: float,
+    G: nx.DiGraph,
+    tracks: dict[str, float],
+) -> None:
+    """Place multiple nodes in the same layer+line, centered around an anchor.
+
+    The anchor is the line's base track if predecessors are nearby,
+    or the predecessor average if they're far away (fan-out from a branch).
+    """
+    # Compute barycenters for ordering
+    bary: dict[str, float] = {}
+    pred_avgs: list[float] = []
+    for node in nodes:
+        avg = _predecessor_avg(node, G, tracks)
+        if avg is not None:
+            bary[node] = avg
+            pred_avgs.append(avg)
+        else:
+            bary[node] = base
+
+    nodes.sort(key=lambda n: bary.get(n, base))
+
+    # Decide anchor: base track or predecessor center
+    if pred_avgs:
+        overall_pred_avg = sum(pred_avgs) / len(pred_avgs)
+        if abs(base - overall_pred_avg) <= line_gap:
+            anchor = base
+        else:
+            anchor = overall_pred_avg
+    else:
+        anchor = base
+
+    # Center the fan-out around the anchor
+    n = len(nodes)
+    for i, node in enumerate(nodes):
+        offset = i - (n - 1) / 2
+        tracks[node] = anchor + offset

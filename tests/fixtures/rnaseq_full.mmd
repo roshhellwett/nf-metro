@@ -1,0 +1,22 @@
+%%metro title: nf-core/rnaseq
+%%metro style: dark
+%%metro line: preprocessing | Pre-processing | #ffa140
+%%metro line: star_salmon | STAR + Salmon | #0570b0
+%%metro line: qc | Quality Control | #969696
+%%metro section: 1 | Pre-processing | cat_fastq | trimgalore
+%%metro section: 2 | Alignment & Quant | star | salmon
+
+graph LR
+    cat_fastq[Cat FastQ]
+    fastqc[FastQC]
+    trimgalore[Trim Galore!]
+    star[STAR]
+    salmon[Salmon]
+    multiqc[MultiQC]
+
+    cat_fastq -->|preprocessing| fastqc
+    cat_fastq -->|preprocessing| trimgalore
+    trimgalore -->|star_salmon| star
+    star -->|star_salmon| salmon
+    fastqc -->|qc| multiqc
+    salmon -->|qc| multiqc
