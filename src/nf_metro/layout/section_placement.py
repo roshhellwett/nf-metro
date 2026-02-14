@@ -1,0 +1,345 @@
+"""Section meta-graph layout: place sections on the canvas.
+
+Builds a DAG of sections from inter-section edges, uses topological
+layering for column assignment and row stacking within columns.
+Grid overrides can pin sections to specific positions.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict, deque
+
+from nf_metro.parser.model import MetroGraph, PortSide, Section
+
+
+def place_sections(
+    graph: MetroGraph,
+    section_x_gap: float = 80.0,
+    section_y_gap: float = 60.0,
+) -> None:
+    """Place sections on the canvas by computing offsets.
+
+    Builds a meta-graph of section dependencies, assigns columns
+    via topological layering, assigns rows within columns, then
+    computes pixel offsets for each section.
+    """
+    if not graph.sections:
+        return
+
+    # Build section dependency DAG (traverse through junctions)
+    section_edges: set[tuple[str, str]] = set()
+
+    # Build adjacency from junctions to find which sections they connect
+    junction_ids = set(graph.junctions)
+    # junction -> set of sections reachable via outgoing edges
+    junction_targets: dict[str, set[str]] = defaultdict(set)
+    # junction -> set of sections feeding into it
+    junction_sources: dict[str, set[str]] = defaultdict(set)
+
+    for edge in graph.edges:
+        src_sec = graph.section_for_station(edge.source)
+        tgt_sec = graph.section_for_station(edge.target)
+
+        if edge.target in junction_ids and src_sec:
+            junction_sources[edge.target].add(src_sec)
+        elif edge.source in junction_ids and tgt_sec:
+            junction_targets[edge.source].add(tgt_sec)
+        elif src_sec and tgt_sec and src_sec != tgt_sec:
+            section_edges.add((src_sec, tgt_sec))
+
+    # Add edges through junctions: each source section -> each target section
+    for jid in junction_ids:
+        for src_sec in junction_sources.get(jid, set()):
+            for tgt_sec in junction_targets.get(jid, set()):
+                if src_sec != tgt_sec:
+                    section_edges.add((src_sec, tgt_sec))
+
+    section_ids = list(graph.sections.keys())
+
+    # Topological layering (columns)
+    in_degree: dict[str, int] = {sid: 0 for sid in section_ids}
+    adj: dict[str, list[str]] = {sid: [] for sid in section_ids}
+    for src, tgt in section_edges:
+        adj[src].append(tgt)
+        in_degree[tgt] += 1
+
+    # BFS topological sort for column assignment
+    col_assign: dict[str, int] = {}
+    queue: deque[str] = deque()
+    for sid in section_ids:
+        if in_degree[sid] == 0:
+            queue.append(sid)
+            col_assign[sid] = 0
+
+    while queue:
+        sid = queue.popleft()
+        for tgt in adj[sid]:
+            new_col = col_assign[sid] + 1
+            if tgt not in col_assign or new_col > col_assign[tgt]:
+                col_assign[tgt] = new_col
+            in_degree[tgt] -= 1
+            if in_degree[tgt] == 0:
+                queue.append(tgt)
+
+    # Handle any sections not reached (disconnected)
+    for sid in section_ids:
+        if sid not in col_assign:
+            col_assign[sid] = 0
+
+    # Apply grid overrides
+    for sid, (col, row) in graph.grid_overrides.items():
+        if sid in graph.sections:
+            graph.sections[sid].grid_col = col
+            graph.sections[sid].grid_row = row
+            col_assign[sid] = col
+
+    # Group sections by column
+    col_groups: dict[int, list[str]] = defaultdict(list)
+    for sid, col in col_assign.items():
+        col_groups[col].append(sid)
+
+    # Assign rows within each column (order by section number, then by id)
+    row_assign: dict[str, int] = {}
+    for col, sids in sorted(col_groups.items()):
+        # Respect explicit grid_row if set
+        explicit = [(sid, graph.sections[sid].grid_row) for sid in sids if graph.sections[sid].grid_row >= 0]
+        auto = [sid for sid in sids if graph.sections[sid].grid_row < 0]
+
+        # Sort auto sections by their number (definition order)
+        auto.sort(key=lambda s: graph.sections[s].number)
+
+        # Place explicit ones first
+        used_rows: set[int] = set()
+        for sid, row in explicit:
+            row_assign[sid] = row
+            used_rows.add(row)
+
+        # Fill in auto sections
+        next_row = 0
+        for sid in auto:
+            while next_row in used_rows:
+                next_row += 1
+            row_assign[sid] = next_row
+            used_rows.add(next_row)
+            next_row += 1
+
+    # Compute pixel offsets: accumulate widths per column, heights per row
+    max_col = max(col_assign.values()) if col_assign else 0
+    max_row = max(row_assign.values()) if row_assign else 0
+
+    # Compute max width per column and max height per row
+    col_widths: dict[int, float] = defaultdict(float)
+    row_heights: dict[int, float] = defaultdict(float)
+
+    for sid, section in graph.sections.items():
+        col = col_assign.get(sid, 0)
+        row = row_assign.get(sid, 0)
+        col_widths[col] = max(col_widths[col], section.bbox_w)
+        row_heights[row] = max(row_heights[row], section.bbox_h)
+
+    # Compute cumulative offsets
+    col_offsets: dict[int, float] = {}
+    cumulative_x = 0.0
+    for col in range(max_col + 1):
+        col_offsets[col] = cumulative_x
+        cumulative_x += col_widths.get(col, 0) + section_x_gap
+
+    row_offsets: dict[int, float] = {}
+    cumulative_y = 0.0
+    for row in range(max_row + 1):
+        row_offsets[row] = cumulative_y
+        cumulative_y += row_heights.get(row, 0) + section_y_gap
+
+    # Set section offsets
+    for sid, section in graph.sections.items():
+        col = col_assign.get(sid, 0)
+        row = row_assign.get(sid, 0)
+        section.grid_col = col
+        section.grid_row = row
+        # Top-left align: tops aligned across rows, lefts aligned down columns
+        section.offset_x = col_offsets.get(col, 0)
+        section.offset_y = row_offsets.get(row, 0)
+
+
+def position_ports(section: Section, graph: MetroGraph) -> None:
+    """Position port stations on section boundaries.
+
+    Entry ports go on the entry side, exit ports on the exit side.
+    Port Y/X is aligned with the connected internal station where possible.
+    Multiple ports on the same side are spaced evenly along the boundary.
+    """
+    # Group ports by side
+    side_ports: dict[PortSide, list[str]] = defaultdict(list)
+    for pid in section.entry_ports + section.exit_ports:
+        port = graph.ports.get(pid)
+        if port:
+            side_ports[port.side].append(pid)
+
+    for side, port_ids in side_ports.items():
+        if side == PortSide.LEFT:
+            x = section.bbox_x
+            _position_ports_vertical(port_ids, x, section, graph)
+        elif side == PortSide.RIGHT:
+            x = section.bbox_x + section.bbox_w
+            _position_ports_vertical(port_ids, x, section, graph)
+        elif side == PortSide.TOP:
+            y = section.bbox_y
+            _position_ports_horizontal(port_ids, y, section, graph)
+        elif side == PortSide.BOTTOM:
+            y = section.bbox_y + section.bbox_h
+            _position_ports_horizontal(port_ids, y, section, graph)
+
+
+def _position_ports_vertical(
+    port_ids: list[str],
+    x: float,
+    section: Section,
+    graph: MetroGraph,
+) -> None:
+    """Position ports along a vertical boundary (LEFT or RIGHT side)."""
+    if not port_ids:
+        return
+
+    # Try to align each port with its connected internal station
+    for pid in port_ids:
+        station = graph.stations.get(pid)
+        if not station:
+            continue
+
+        # Find connected internal station
+        connected_y = _find_connected_internal_y(pid, section, graph)
+        station.x = x
+        station.y = connected_y if connected_y is not None else (section.bbox_y + section.bbox_h / 2)
+
+        # Update port data too
+        port = graph.ports.get(pid)
+        if port:
+            port.x = station.x
+            port.y = station.y
+
+    # If multiple ports are at the same Y, space them out
+    _spread_overlapping_ports(port_ids, graph, axis="y", span_start=section.bbox_y, span_end=section.bbox_y + section.bbox_h)
+
+
+def _position_ports_horizontal(
+    port_ids: list[str],
+    y: float,
+    section: Section,
+    graph: MetroGraph,
+) -> None:
+    """Position ports along a horizontal boundary (TOP or BOTTOM side)."""
+    if not port_ids:
+        return
+
+    for pid in port_ids:
+        station = graph.stations.get(pid)
+        if not station:
+            continue
+
+        connected_x = _find_connected_internal_x(pid, section, graph)
+        station.x = connected_x if connected_x is not None else (section.bbox_x + section.bbox_w / 2)
+        station.y = y
+
+        port = graph.ports.get(pid)
+        if port:
+            port.x = station.x
+            port.y = station.y
+
+    _spread_overlapping_ports(port_ids, graph, axis="x", span_start=section.bbox_x, span_end=section.bbox_x + section.bbox_w)
+
+
+def _find_connected_internal_y(
+    port_id: str,
+    section: Section,
+    graph: MetroGraph,
+) -> float | None:
+    """Find the Y coordinate to align a port with its connected internal stations.
+
+    If the port connects to multiple stations (e.g. a shared entry port),
+    returns the average Y of all connected stations.
+    """
+    internal_ids = set(section.station_ids) - set(section.entry_ports) - set(section.exit_ports)
+    ys: list[float] = []
+    for edge in graph.edges:
+        if edge.source == port_id and edge.target in internal_ids:
+            ys.append(graph.stations[edge.target].y)
+        if edge.target == port_id and edge.source in internal_ids:
+            ys.append(graph.stations[edge.source].y)
+    if ys:
+        return sum(ys) / len(ys)
+    return None
+
+
+def _find_connected_internal_x(
+    port_id: str,
+    section: Section,
+    graph: MetroGraph,
+) -> float | None:
+    """Find the X coordinate to align a port with its connected internal stations.
+
+    If the port connects to multiple stations, returns the average X.
+    """
+    internal_ids = set(section.station_ids) - set(section.entry_ports) - set(section.exit_ports)
+    xs: list[float] = []
+    for edge in graph.edges:
+        if edge.source == port_id and edge.target in internal_ids:
+            xs.append(graph.stations[edge.target].x)
+        if edge.target == port_id and edge.source in internal_ids:
+            xs.append(graph.stations[edge.source].x)
+    if xs:
+        return sum(xs) / len(xs)
+    return None
+
+
+def _spread_overlapping_ports(
+    port_ids: list[str],
+    graph: MetroGraph,
+    axis: str,
+    span_start: float,
+    span_end: float,
+    min_gap: float = 15.0,
+) -> None:
+    """Spread ports that ended up at the same position."""
+    if len(port_ids) <= 1:
+        return
+
+    # Check for overlap
+    positions: list[tuple[str, float]] = []
+    for pid in port_ids:
+        station = graph.stations.get(pid)
+        if station:
+            pos = station.y if axis == "y" else station.x
+            positions.append((pid, pos))
+
+    positions.sort(key=lambda p: p[1])
+
+    # Check if any ports overlap
+    needs_spread = False
+    for i in range(1, len(positions)):
+        if abs(positions[i][1] - positions[i - 1][1]) < min_gap:
+            needs_spread = True
+            break
+
+    if not needs_spread:
+        return
+
+    # Evenly space ports along the span
+    n = len(positions)
+    margin = min_gap
+    available = (span_end - span_start) - 2 * margin
+    step = available / max(n - 1, 1)
+
+    for i, (pid, _) in enumerate(positions):
+        new_pos = span_start + margin + i * step
+        station = graph.stations.get(pid)
+        if station:
+            if axis == "y":
+                station.y = new_pos
+            else:
+                station.x = new_pos
+            port = graph.ports.get(pid)
+            if port:
+                if axis == "y":
+                    port.y = new_pos
+                else:
+                    port.x = new_pos

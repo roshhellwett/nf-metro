@@ -67,7 +67,7 @@ def test_render_empty_graph():
     assert "svg" in svg
 
 
-def test_render_with_sections():
+def test_render_with_legacy_sections():
     graph = parse_metro_mermaid(
         "%%metro title: Sections Test\n"
         "%%metro line: main | Main | #ff0000\n"
@@ -103,3 +103,67 @@ def test_render_file_size():
     svg = render_svg(graph, NFCORE_THEME)
     # Should be well under 50KB for a small graph
     assert len(svg) < 50000
+
+
+# --- First-class section rendering tests ---
+
+
+def test_render_first_class_sections():
+    """First-class sections render section boxes with names."""
+    graph = parse_metro_mermaid(
+        "%%metro title: Section Test\n"
+        "%%metro line: main | Main | #ff0000\n"
+        "graph LR\n"
+        "    subgraph sec1 [Processing]\n"
+        "        a[Input]\n"
+        "        b[Middle]\n"
+        "        a -->|main| b\n"
+        "    end\n"
+        "    subgraph sec2 [Output]\n"
+        "        c[Result]\n"
+        "    end\n"
+        "    b -->|main| c\n"
+    )
+    compute_layout(graph)
+    svg = render_svg(graph, NFCORE_THEME)
+    assert "Processing" in svg
+    assert "Output" in svg
+    assert "Input" in svg
+    assert "Result" in svg
+    # Should be valid XML
+    root = ET.fromstring(svg)
+    assert root.tag.endswith("svg") or "svg" in root.tag
+
+
+def test_render_sections_no_port_labels():
+    """Port stations should not appear as labels in the SVG."""
+    graph = parse_metro_mermaid(
+        "%%metro line: main | Main | #ff0000\n"
+        "graph LR\n"
+        "    subgraph sec1 [S1]\n"
+        "        a[A]\n"
+        "    end\n"
+        "    subgraph sec2 [S2]\n"
+        "        b[B]\n"
+        "    end\n"
+        "    a -->|main| b\n"
+    )
+    compute_layout(graph)
+    svg = render_svg(graph, NFCORE_THEME)
+    # Port IDs should not appear in the SVG text
+    for port_id in graph.ports:
+        assert port_id not in svg, f"Port {port_id} should not appear in SVG"
+
+
+def test_render_rnaseq_sections_example():
+    """The rnaseq_sections.mmd example should render without errors."""
+    from pathlib import Path
+    examples = Path(__file__).parent.parent / "examples"
+    text = (examples / "rnaseq_sections.mmd").read_text()
+    graph = parse_metro_mermaid(text)
+    compute_layout(graph)
+    svg = render_svg(graph, NFCORE_THEME)
+    assert "nf-core/rnaseq" in svg
+    assert "Pre-processing" in svg
+    root = ET.fromstring(svg)
+    assert root.tag.endswith("svg") or "svg" in root.tag

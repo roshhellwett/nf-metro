@@ -1,7 +1,7 @@
 """Tests for edge routing."""
 
 from nf_metro.layout.engine import compute_layout
-from nf_metro.layout.routing import compute_parallel_offsets, route_edges
+from nf_metro.layout.routing import compute_station_offsets, route_edges
 from nf_metro.parser.mermaid import parse_metro_mermaid
 
 
@@ -40,21 +40,21 @@ def test_diagonal_route():
     assert len(routes) == 4
 
 
-def test_parallel_offsets_single_line():
-    """Single line on a segment should have zero offset."""
+def test_station_offsets_single_line():
+    """Single line on a station should have zero offset."""
     graph = parse_metro_mermaid(
         "%%metro line: main | Main | #ff0000\n"
         "graph LR\n"
         "    a -->|main| b\n"
     )
     compute_layout(graph)
-    routes = route_edges(graph)
-    offsets = compute_parallel_offsets(routes)
-    assert offsets[("a", "b")]["main"] == 0.0
+    offsets = compute_station_offsets(graph)
+    assert offsets[("a", "main")] == 0.0
+    assert offsets[("b", "main")] == 0.0
 
 
-def test_parallel_offsets_multiple_lines():
-    """Multiple lines on the same segment should get different offsets."""
+def test_station_offsets_multiple_lines():
+    """Multiple lines on the same station should get different offsets."""
     graph = parse_metro_mermaid(
         "%%metro line: main | Main | #ff0000\n"
         "%%metro line: alt | Alt | #0000ff\n"
@@ -63,6 +63,55 @@ def test_parallel_offsets_multiple_lines():
         "    a -->|alt| b\n"
     )
     compute_layout(graph)
+    offsets = compute_station_offsets(graph)
+    assert offsets[("a", "main")] != offsets[("a", "alt")]
+
+
+# --- Inter-section routing tests ---
+
+
+def test_inter_section_routing():
+    """Inter-section edges should be routed through ports."""
+    from nf_metro.layout.routing import route_inter_section_edges
+
+    graph = parse_metro_mermaid(
+        "%%metro line: main | Main | #ff0000\n"
+        "graph LR\n"
+        "    subgraph sec1 [S1]\n"
+        "        a[A]\n"
+        "        b[B]\n"
+        "        a -->|main| b\n"
+        "    end\n"
+        "    subgraph sec2 [S2]\n"
+        "        c[C]\n"
+        "    end\n"
+        "    b -->|main| c\n"
+    )
+    compute_layout(graph)
+    inter_routes = route_inter_section_edges(graph)
+    # Should have at least one inter-section route (the port-to-port edges)
+    assert len(inter_routes) > 0
+
+
+def test_section_routes_have_valid_points():
+    """All routed paths should have at least 2 points."""
+    graph = parse_metro_mermaid(
+        "%%metro line: main | Main | #ff0000\n"
+        "%%metro line: alt | Alt | #0000ff\n"
+        "graph LR\n"
+        "    subgraph sec1 [S1]\n"
+        "        a[A]\n"
+        "    end\n"
+        "    subgraph sec2 [S2]\n"
+        "        b[B]\n"
+        "    end\n"
+        "    subgraph sec3 [S3]\n"
+        "        c[C]\n"
+        "    end\n"
+        "    a -->|main| b\n"
+        "    a -->|alt| c\n"
+    )
+    compute_layout(graph)
     routes = route_edges(graph)
-    offsets = compute_parallel_offsets(routes)
-    assert offsets[("a", "b")]["main"] != offsets[("a", "b")]["alt"]
+    for route in routes:
+        assert len(route.points) >= 2, f"Route {route.edge.source}->{route.edge.target} has {len(route.points)} points"

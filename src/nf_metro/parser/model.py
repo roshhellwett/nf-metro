@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class PortSide(Enum):
+    """Side of a section boundary where a port is located."""
+
+    LEFT = "left"
+    RIGHT = "right"
+    TOP = "top"
+    BOTTOM = "bottom"
 
 
 @dataclass
@@ -20,6 +30,8 @@ class Station:
 
     id: str
     label: str
+    section_id: str | None = None
+    is_port: bool = False
     # Populated by layout engine
     x: float = 0.0
     y: float = 0.0
@@ -37,8 +49,61 @@ class Edge:
 
 
 @dataclass
+class Port:
+    """A synthetic entry/exit point on a section boundary.
+
+    Ports are created from inter-section edges and explicit %%metro entry/exit
+    directives. They become invisible stations that participate in layout but
+    are skipped during rendering.
+    """
+
+    id: str
+    section_id: str
+    side: PortSide
+    line_ids: list[str] = field(default_factory=list)
+    is_entry: bool = True
+    x: float = 0.0
+    y: float = 0.0
+
+
+@dataclass
 class Section:
-    """A visual grouping of stations (background rectangle)."""
+    """A first-class visual grouping of stations (subgraph).
+
+    Used with the new subgraph-based format where sections are explicit
+    Mermaid subgraphs with entry/exit port directives.
+    """
+
+    id: str
+    name: str
+    number: int = 0
+    station_ids: list[str] = field(default_factory=list)
+    internal_edges: list[Edge] = field(default_factory=list)
+    entry_ports: list[str] = field(default_factory=list)  # port IDs
+    exit_ports: list[str] = field(default_factory=list)  # port IDs
+    # Hints from %%metro entry/exit directives: list of (side, [line_ids])
+    exit_hints: list[tuple[PortSide, list[str]]] = field(default_factory=list)
+    entry_hints: list[tuple[PortSide, list[str]]] = field(default_factory=list)
+    # Bounding box (set by layout engine)
+    bbox_x: float = 0.0
+    bbox_y: float = 0.0
+    bbox_w: float = 0.0
+    bbox_h: float = 0.0
+    # Grid position (for section placement)
+    grid_col: int = -1  # -1 means auto
+    grid_row: int = -1
+    # Global offset (set by section placement)
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+
+
+@dataclass
+class LegacySection:
+    """A visual grouping of stations using the old format.
+
+    Old format: %%metro section: number | name | start_node | end_node
+    Kept for backward compatibility.
+    """
 
     number: int
     name: str
@@ -67,7 +132,11 @@ class MetroGraph:
     lines: dict[str, MetroLine] = field(default_factory=dict)
     stations: dict[str, Station] = field(default_factory=dict)
     edges: list[Edge] = field(default_factory=list)
-    sections: list[Section] = field(default_factory=list)
+    sections: dict[str, Section] = field(default_factory=dict)
+    legacy_sections: list[LegacySection] = field(default_factory=list)
+    ports: dict[str, Port] = field(default_factory=dict)
+    junctions: list[str] = field(default_factory=list)
+    grid_overrides: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def add_line(self, line: MetroLine) -> None:
         self.lines[line.id] = line
@@ -79,7 +148,28 @@ class MetroGraph:
         self.edges.append(edge)
 
     def add_section(self, section: Section) -> None:
-        self.sections.append(section)
+        self.sections[section.id] = section
+
+    def add_legacy_section(self, section: LegacySection) -> None:
+        self.legacy_sections.append(section)
+
+    def add_port(self, port: Port) -> None:
+        self.ports[port.id] = port
+        # Also add as a station so it participates in layout
+        self.stations[port.id] = Station(
+            id=port.id,
+            label="",
+            section_id=port.section_id,
+            is_port=True,
+        )
+        # Register with the section
+        section = self.sections.get(port.section_id)
+        if section:
+            section.station_ids.append(port.id)
+            if port.is_entry:
+                section.entry_ports.append(port.id)
+            else:
+                section.exit_ports.append(port.id)
 
     def station_lines(self, station_id: str) -> list[str]:
         """Return line IDs that pass through a station."""
@@ -102,3 +192,20 @@ class MetroGraph:
                     stations.append(edge.target)
                     seen.add(edge.target)
         return stations
+
+    def inter_section_edges(self) -> list[Edge]:
+        """Return edges that cross section boundaries."""
+        result = []
+        for edge in self.edges:
+            src_section = self.section_for_station(edge.source)
+            tgt_section = self.section_for_station(edge.target)
+            if src_section and tgt_section and src_section != tgt_section:
+                result.append(edge)
+        return result
+
+    def section_for_station(self, station_id: str) -> str | None:
+        """Return the section ID containing a station, or None."""
+        station = self.stations.get(station_id)
+        if station:
+            return station.section_id
+        return None

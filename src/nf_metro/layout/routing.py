@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from nf_metro.parser.model import Edge, MetroGraph
+from nf_metro.parser.model import Edge, MetroGraph, PortSide
 
 
 @dataclass
@@ -20,6 +20,7 @@ class RoutedPath:
     edge: Edge
     line_id: str
     points: list[tuple[float, float]]
+    is_inter_section: bool = False
 
 
 def route_edges(
@@ -37,14 +38,85 @@ def route_edges(
     all_x = [s.x for s in graph.stations.values()]
     fold_x = max(all_x) if all_x else 0
 
+    junction_ids = set(graph.junctions)
+
+    # Pre-compute horizontal offsets for lines at each junction
+    # so vertical bundles have visible line separation
+    line_order = list(graph.lines.keys())
+    line_priority = {lid: i for i, lid in enumerate(line_order)}
+    junction_x_offsets: dict[tuple[str, str], float] = {}
+    offset_step = 3.0
+    for jid in junction_ids:
+        lines_at = graph.station_lines(jid)
+        lines_at.sort(key=lambda l: line_priority.get(l, 999))
+        n = len(lines_at)
+        for i, lid in enumerate(lines_at):
+            # Reverse order: lowest line (highest Y offset at target)
+            # gets smallest X offset (turns south first, leftmost)
+            junction_x_offsets[(jid, lid)] = (n - 1 - i) * offset_step
+
     for edge in graph.edges:
-        src = graph.stations[edge.source]
-        tgt = graph.stations[edge.target]
+        src = graph.stations.get(edge.source)
+        tgt = graph.stations.get(edge.target)
+        if not src or not tgt:
+            continue
 
         sx, sy = src.x, src.y
         tx, ty = tgt.x, tgt.y
         dx = tx - sx
         dy = ty - sy
+
+        # Inter-section routing: edges between ports/junctions use only
+        # horizontal and vertical segments (L-shapes), no diagonals.
+        is_inter_section = (
+            (src.is_port or edge.source in junction_ids)
+            and (tgt.is_port or edge.target in junction_ids)
+        )
+        if is_inter_section:
+            # Horizontal offset for vertical runs in bundles
+            x_off = junction_x_offsets.get((edge.source, edge.line_id),
+                     junction_x_offsets.get((edge.target, edge.line_id), 0.0))
+
+            if abs(dy) < 0.01:
+                # Same Y: straight horizontal
+                routes.append(RoutedPath(
+                    edge=edge, line_id=edge.line_id,
+                    points=[(sx, sy), (tx, ty)],
+                    is_inter_section=True,
+                ))
+            elif abs(dx) < 1.0:
+                # Same X: straight vertical - apply horizontal offset
+                routes.append(RoutedPath(
+                    edge=edge, line_id=edge.line_id,
+                    points=[(sx + x_off, sy), (tx + x_off, ty)],
+                    is_inter_section=True,
+                ))
+            else:
+                # L-shape: vertical first, then horizontal to entry port.
+                # Include fan-out point only if x_off > 0 to avoid
+                # degenerate zero-length segments.
+                if abs(x_off) > 0.01:
+                    routes.append(RoutedPath(
+                        edge=edge, line_id=edge.line_id,
+                        points=[
+                            (sx, sy),
+                            (sx + x_off, sy),
+                            (sx + x_off, ty),
+                            (tx, ty),
+                        ],
+                        is_inter_section=True,
+                    ))
+                else:
+                    routes.append(RoutedPath(
+                        edge=edge, line_id=edge.line_id,
+                        points=[
+                            (sx, sy),
+                            (sx, ty),
+                            (tx, ty),
+                        ],
+                        is_inter_section=True,
+                    ))
+            continue
 
         # Detect cross-row edge: target is to the left (only in folded layouts)
         is_cross_row = dx <= 0 and abs(dy) > 80
@@ -78,6 +150,75 @@ def route_edges(
                 ))
                 continue
 
+            sign = 1.0 if dx > 0 else -1.0
+            half_diag = diagonal_run / 2
+
+            mid_x = (sx + tx) / 2
+            diag_start_x = mid_x - sign * half_diag
+            diag_end_x = mid_x + sign * half_diag
+
+            if sign > 0:
+                diag_start_x = max(diag_start_x, sx + 10)
+                diag_end_x = min(diag_end_x, tx - 10)
+            else:
+                diag_start_x = min(diag_start_x, sx - 10)
+                diag_end_x = max(diag_end_x, tx + 10)
+
+            routes.append(RoutedPath(
+                edge=edge, line_id=edge.line_id,
+                points=[
+                    (sx, sy),
+                    (diag_start_x, sy),
+                    (diag_end_x, ty),
+                    (tx, ty),
+                ],
+            ))
+
+    return routes
+
+
+def route_inter_section_edges(
+    graph: MetroGraph,
+    diagonal_run: float = 30.0,
+) -> list[RoutedPath]:
+    """Route edges that cross section boundaries (port-to-port).
+
+    These are edges where both source and target are ports (or one is a port).
+    Uses the same routing style as regular edges.
+    """
+    routes: list[RoutedPath] = []
+
+    for edge in graph.edges:
+        src = graph.stations.get(edge.source)
+        tgt = graph.stations.get(edge.target)
+        if not src or not tgt:
+            continue
+
+        # Only route edges that cross section boundaries:
+        # - Both endpoints in different sections, OR
+        # - One endpoint is a junction (section_id=None, e.g. divergence point)
+        src_sec = src.section_id
+        tgt_sec = tgt.section_id
+        is_junction_edge = src_sec is None or tgt_sec is None
+        if not is_junction_edge and (src_sec == tgt_sec):
+            continue
+
+        sx, sy = src.x, src.y
+        tx, ty = tgt.x, tgt.y
+        dx = tx - sx
+        dy = ty - sy
+
+        if abs(dy) < 0.01:
+            routes.append(RoutedPath(
+                edge=edge, line_id=edge.line_id,
+                points=[(sx, sy), (tx, ty)],
+            ))
+        elif abs(dx) < 1.0:
+            routes.append(RoutedPath(
+                edge=edge, line_id=edge.line_id,
+                points=[(sx, sy), (tx, ty)],
+            ))
+        else:
             sign = 1.0 if dx > 0 else -1.0
             half_diag = diagonal_run / 2
 

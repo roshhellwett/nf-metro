@@ -74,7 +74,7 @@ def place_labels(
     3. If still colliding, push further away.
     """
     sorted_stations = sorted(
-        graph.stations.values(),
+        (s for s in graph.stations.values() if not s.is_port),
         key=lambda s: (s.layer, s.track),
     )
 

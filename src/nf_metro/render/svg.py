@@ -22,8 +22,18 @@ def render_svg(
     if not graph.stations:
         return '<svg xmlns="http://www.w3.org/2000/svg"></svg>'
 
-    max_x = max(s.x for s in graph.stations.values())
-    max_y = max(s.y for s in graph.stations.values())
+    # Filter out port stations for dimension calculation
+    visible_stations = [s for s in graph.stations.values() if not s.is_port]
+    all_stations_for_bounds = visible_stations if visible_stations else list(graph.stations.values())
+
+    max_x = max(s.x for s in all_stations_for_bounds)
+    max_y = max(s.y for s in all_stations_for_bounds)
+
+    # Also consider section bounding boxes
+    for section in graph.sections.values():
+        if section.bbox_w > 0:
+            max_x = max(max_x, section.bbox_x + section.bbox_w)
+            max_y = max(max_y, section.bbox_y + section.bbox_h)
 
     # Reserve space for legend
     legend_height = 24.0 * len(graph.lines) + 40.0 if graph.lines else 0
@@ -50,8 +60,11 @@ def render_svg(
             font_weight="bold",
         ))
 
-    # Sections (numbered circles)
-    _render_sections(d, graph, theme)
+    # Sections
+    if graph.sections:
+        _render_first_class_sections(d, graph, theme)
+    elif graph.legacy_sections:
+        _render_legacy_sections(d, graph, theme)
 
     # Route edges
     routes = route_edges(graph)
@@ -60,10 +73,10 @@ def render_svg(
     # Draw edges (lines) behind stations
     _render_edges(d, graph, routes, station_offsets, theme)
 
-    # Draw stations (all circles)
+    # Draw stations (all circles, skip ports)
     _render_stations(d, graph, theme, station_offsets)
 
-    # Draw labels (horizontal)
+    # Draw labels (horizontal, skip ports)
     labels = place_labels(graph)
     _render_labels(d, labels, theme)
 
@@ -75,131 +88,19 @@ def render_svg(
     return d.as_svg()
 
 
-def _section_station_ids(
-    graph: MetroGraph,
-    section,
-) -> set[str]:
-    """Find stations belonging to a section via flood-fill within the layer range.
-
-    Uses bidirectional graph traversal from the start node, constrained to
-    layers between start and end. This correctly separates sections that
-    share the same layer range but occupy different tracks.
-    """
-    from collections import defaultdict, deque
-
-    start = graph.stations.get(section.start_node)
-    end = graph.stations.get(section.end_node)
-    if not start or not end:
-        return set()
-
-    min_layer = min(start.layer, end.layer)
-    max_layer = max(start.layer, end.layer)
-
-    # Build bidirectional adjacency within layer range
-    adj: dict[str, set[str]] = defaultdict(set)
-    for edge in graph.edges:
-        src = graph.stations.get(edge.source)
-        tgt = graph.stations.get(edge.target)
-        if src and tgt:
-            if min_layer <= src.layer <= max_layer and min_layer <= tgt.layer <= max_layer:
-                adj[edge.source].add(edge.target)
-                adj[edge.target].add(edge.source)
-
-    # BFS from start_node
-    visited: set[str] = set()
-    queue: deque[str] = deque([section.start_node])
-    while queue:
-        node = queue.popleft()
-        if node in visited:
-            continue
-        s = graph.stations.get(node)
-        if not s or s.layer < min_layer or s.layer > max_layer:
-            continue
-        visited.add(node)
-        for nb in adj[node]:
-            if nb not in visited:
-                queue.append(nb)
-
-    return visited
-
-
-def _render_sections(
+def _render_first_class_sections(
     d: draw.Drawing,
     graph: MetroGraph,
     theme: Theme,
-    x_padding: float = 20.0,
-    y_padding: float = 35.0,
 ) -> None:
-    """Render section boxes as rounded rectangles around station groups."""
-    # First pass: compute all section bounding boxes
-    section_boxes: list[tuple] = []  # (section, bx, by, bw, bh)
-    for section in graph.sections:
-        station_ids = _section_station_ids(graph, section)
-        if not station_ids:
+    """Render first-class sections using pre-computed bounding boxes."""
+    for section in graph.sections.values():
+        if section.bbox_w <= 0 or section.bbox_h <= 0:
             continue
 
-        stations = [graph.stations[sid] for sid in station_ids]
-
-        x_min = min(s.x for s in stations)
-        x_max = max(s.x for s in stations)
-        y_min = min(s.y for s in stations)
-        y_max = max(s.y for s in stations)
-
-        bx = x_min - x_padding
-        by = y_min - y_padding
-        bw = (x_max - x_min) + x_padding * 2
-        bh = (y_max - y_min) + y_padding * 2
-        section_boxes.append((section, bx, by, bw, bh))
-
-    # Align top edges of sections with overlapping Y ranges
-    if section_boxes:
-        # Compute station Y ranges per section for overlap detection
-        station_y_ranges = []
-        for section in graph.sections:
-            ids = _section_station_ids(graph, section)
-            if ids:
-                ys = [graph.stations[sid].y for sid in ids]
-                station_y_ranges.append((min(ys), max(ys)))
-            else:
-                station_y_ranges.append(None)
-
-        # Group overlapping sections (union-find style)
-        n = len(section_boxes)
-        group = list(range(n))
-
-        def find(i):
-            while group[i] != i:
-                group[i] = group[group[i]]
-                i = group[i]
-            return i
-
-        valid_ranges = [(i, station_y_ranges[i]) for i in range(n) if i < len(station_y_ranges) and station_y_ranges[i]]
-        for ai, (a_ymin, a_ymax) in valid_ranges:
-            for bi, (b_ymin, b_ymax) in valid_ranges:
-                if ai < bi and a_ymin <= b_ymax and b_ymin <= a_ymax:
-                    group[find(ai)] = find(bi)
-
-        # Align tops within each group
-        from collections import defaultdict as _defaultdict
-        groups: dict[int, list[int]] = _defaultdict(list)
-        for i in range(n):
-            groups[find(i)].append(i)
-
-        aligned = list(section_boxes)
-        for members in groups.values():
-            if len(members) > 1:
-                min_top = min(section_boxes[i][2] for i in members)
-                for i in members:
-                    sec, bx, by, bw, bh = aligned[i]
-                    new_bh = bh + (by - min_top)
-                    aligned[i] = (sec, bx, min_top, bw, new_bh)
-
-        section_boxes = aligned
-
-    # Second pass: render
-    for section, bx, by, bw, bh in section_boxes:
         d.append(draw.Rectangle(
-            bx, by, bw, bh,
+            section.bbox_x, section.bbox_y,
+            section.bbox_w, section.bbox_h,
             rx=8, ry=8,
             fill=theme.section_fill,
             stroke=theme.section_stroke,
@@ -208,8 +109,8 @@ def _render_sections(
 
         # Numbered circle above the box, left-aligned
         circle_r = 9
-        cx = bx + circle_r
-        cy = by - circle_r - 4
+        cx = section.bbox_x + circle_r
+        cy = section.bbox_y - circle_r - 4
 
         d.append(draw.Circle(
             cx, cy, circle_r,
@@ -237,6 +138,156 @@ def _render_sections(
         ))
 
 
+def _section_station_ids(
+    graph: MetroGraph,
+    section,
+) -> set[str]:
+    """Find stations belonging to a legacy section via flood-fill within the layer range."""
+    from collections import defaultdict, deque
+
+    start = graph.stations.get(section.start_node)
+    end = graph.stations.get(section.end_node)
+    if not start or not end:
+        return set()
+
+    min_layer = min(start.layer, end.layer)
+    max_layer = max(start.layer, end.layer)
+
+    adj: dict[str, set[str]] = defaultdict(set)
+    for edge in graph.edges:
+        src = graph.stations.get(edge.source)
+        tgt = graph.stations.get(edge.target)
+        if src and tgt:
+            if min_layer <= src.layer <= max_layer and min_layer <= tgt.layer <= max_layer:
+                adj[edge.source].add(edge.target)
+                adj[edge.target].add(edge.source)
+
+    visited: set[str] = set()
+    queue: deque[str] = deque([section.start_node])
+    while queue:
+        node = queue.popleft()
+        if node in visited:
+            continue
+        s = graph.stations.get(node)
+        if not s or s.layer < min_layer or s.layer > max_layer:
+            continue
+        visited.add(node)
+        for nb in adj[node]:
+            if nb not in visited:
+                queue.append(nb)
+
+    return visited
+
+
+def _render_legacy_sections(
+    d: draw.Drawing,
+    graph: MetroGraph,
+    theme: Theme,
+    x_padding: float = 35.0,
+    y_padding: float = 35.0,
+) -> None:
+    """Render legacy section boxes as rounded rectangles around station groups."""
+    # First pass: compute all section bounding boxes
+    section_boxes: list[tuple] = []
+    for section in graph.legacy_sections:
+        station_ids = _section_station_ids(graph, section)
+        if not station_ids:
+            continue
+
+        stations = [graph.stations[sid] for sid in station_ids]
+
+        x_min = min(s.x for s in stations)
+        x_max = max(s.x for s in stations)
+        y_min = min(s.y for s in stations)
+        y_max = max(s.y for s in stations)
+
+        bx = x_min - x_padding
+        by = y_min - y_padding
+        bw = (x_max - x_min) + x_padding * 2
+        bh = (y_max - y_min) + y_padding * 2
+        section_boxes.append((section, bx, by, bw, bh))
+
+    # Align top edges of sections with overlapping Y ranges
+    if section_boxes:
+        station_y_ranges = []
+        for section in graph.legacy_sections:
+            ids = _section_station_ids(graph, section)
+            if ids:
+                ys = [graph.stations[sid].y for sid in ids]
+                station_y_ranges.append((min(ys), max(ys)))
+            else:
+                station_y_ranges.append(None)
+
+        n = len(section_boxes)
+        group = list(range(n))
+
+        def find(i):
+            while group[i] != i:
+                group[i] = group[group[i]]
+                i = group[i]
+            return i
+
+        valid_ranges = [(i, station_y_ranges[i]) for i in range(n) if i < len(station_y_ranges) and station_y_ranges[i]]
+        for ai, (a_ymin, a_ymax) in valid_ranges:
+            for bi, (b_ymin, b_ymax) in valid_ranges:
+                if ai < bi and a_ymin <= b_ymax and b_ymin <= a_ymax:
+                    group[find(ai)] = find(bi)
+
+        from collections import defaultdict as _defaultdict
+        groups: dict[int, list[int]] = _defaultdict(list)
+        for i in range(n):
+            groups[find(i)].append(i)
+
+        aligned = list(section_boxes)
+        for members in groups.values():
+            if len(members) > 1:
+                min_top = min(section_boxes[i][2] for i in members)
+                for i in members:
+                    sec, bx, by, bw, bh = aligned[i]
+                    new_bh = bh + (by - min_top)
+                    aligned[i] = (sec, bx, min_top, bw, new_bh)
+
+        section_boxes = aligned
+
+    # Second pass: render
+    for section, bx, by, bw, bh in section_boxes:
+        d.append(draw.Rectangle(
+            bx, by, bw, bh,
+            rx=8, ry=8,
+            fill=theme.section_fill,
+            stroke=theme.section_stroke,
+            stroke_width=1.0,
+        ))
+
+        circle_r = 9
+        cx = bx + circle_r
+        cy = by - circle_r - 4
+
+        d.append(draw.Circle(
+            cx, cy, circle_r,
+            fill=theme.station_stroke,
+        ))
+        d.append(draw.Text(
+            str(section.number),
+            9,
+            cx, cy,
+            fill=theme.station_fill,
+            font_family=theme.label_font_family,
+            font_weight="bold",
+            text_anchor="middle",
+            dominant_baseline="central",
+        ))
+
+        d.append(draw.Text(
+            section.name,
+            theme.section_label_font_size,
+            cx + circle_r + 5, cy,
+            fill=theme.section_label_color,
+            font_family=theme.label_font_family,
+            dominant_baseline="central",
+        ))
+
+
 def _render_edges(
     d: draw.Drawing,
     graph: MetroGraph,
@@ -253,8 +304,6 @@ def _render_edges(
         src_off = station_offsets.get((route.edge.source, route.line_id), 0.0)
         tgt_off = station_offsets.get((route.edge.target, route.line_id), 0.0)
 
-        # Apply per-endpoint offsets: points near source y get src_off,
-        # points near target y get tgt_off
         orig_sy = route.points[0][1]
         orig_ty = route.points[-1][1]
         pts = []
@@ -324,15 +373,15 @@ def _render_stations(
 ) -> None:
     """Render stations as vertical oblongs (pill shapes).
 
-    All stations are oblongs. Interchange stations (multiple lines) are
-    taller to span the parallel tracks passing through them. The oblong
-    is positioned to cover the actual line offset span at each station.
+    Skips port stations (is_port=True).
     """
     for station in graph.stations.values():
+        if station.is_port:
+            continue
+
         r = theme.station_radius
         w = r * 2
 
-        # Compute actual line span from station offsets
         if station_offsets:
             line_offsets = [
                 station_offsets.get((station.id, lid), 0.0)
@@ -348,7 +397,6 @@ def _render_stations(
 
         span = max_off - min_off
         h = span + r * 2
-        # Center the oblong on the midpoint of the line span
         cy = station.y + (min_off + max_off) / 2
         d.append(draw.Rectangle(
             station.x - w / 2, cy - h / 2,

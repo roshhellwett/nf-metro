@@ -81,8 +81,8 @@ def validate(input_file: Path) -> None:
             errors.append(f"Edge {edge.source} -> {edge.target} references "
                           f"undefined line '{edge.line_id}'")
 
-    # Check that section nodes exist
-    for section in graph.sections:
+    # Check that legacy section nodes exist
+    for section in graph.legacy_sections:
         if section.start_node not in graph.stations:
             errors.append(f"Section '{section.name}' references unknown "
                           f"start node '{section.start_node}'")
@@ -90,16 +90,24 @@ def validate(input_file: Path) -> None:
             errors.append(f"Section '{section.name}' references unknown "
                           f"end node '{section.end_node}'")
 
+    # Check that first-class section station IDs exist
+    for section in graph.sections.values():
+        for sid in section.station_ids:
+            if sid not in graph.stations:
+                errors.append(f"Section '{section.name}' references unknown "
+                              f"station '{sid}'")
+
     if errors:
         click.echo("Validation errors:", err=True)
         for err in errors:
             click.echo(f"  - {err}", err=True)
         raise SystemExit(1)
 
+    total_sections = len(graph.sections) + len(graph.legacy_sections)
     click.echo(f"Valid: {len(graph.stations)} stations, "
                f"{len(graph.edges)} edges, "
                f"{len(graph.lines)} lines, "
-               f"{len(graph.sections)} sections")
+               f"{total_sections} sections")
 
 
 @cli.command()
@@ -118,4 +126,139 @@ def info(input_file: Path) -> None:
         stations = graph.line_stations(lid)
         click.echo(f"  {line.display_name} ({line.color}): "
                     f"{len(stations)} stations")
-    click.echo(f"Sections: {len(graph.sections)}")
+    total_sections = len(graph.sections) + len(graph.legacy_sections)
+    click.echo(f"Sections: {total_sections}")
+    for section in graph.sections.values():
+        click.echo(f"  [{section.number}] {section.name}: "
+                    f"{len(section.station_ids)} stations")
+    for section in graph.legacy_sections:
+        click.echo(f"  [{section.number}] {section.name}: "
+                    f"{section.start_node} -> {section.end_node}")
+
+
+@cli.command()
+@click.argument("input_file", type=click.Path(exists=True, path_type=Path))
+@click.option("-o", "--output", type=click.Path(path_type=Path), default=None,
+              help="Output file path. Defaults to <input>_sections.mmd")
+def convert(input_file: Path, output: Path | None) -> None:
+    """Convert a legacy-format metro map to the new subgraph format.
+
+    Reads a .mmd file using %%metro section: directives and rewrites it
+    using Mermaid subgraph syntax with %%metro entry/exit directives.
+    """
+    from nf_metro.layout.layers import assign_layers
+
+    text = input_file.read_text()
+    graph = parse_metro_mermaid(text)
+
+    if not graph.legacy_sections:
+        click.echo("No legacy sections found - file may already use subgraph format.")
+        return
+
+    # We need layer assignments to determine section membership
+    layers = assign_layers(graph)
+
+    # Build section membership using flood-fill (same as rendering)
+    from nf_metro.layout.engine import _section_stations
+    section_membership: dict[str, int] = {}  # station_id -> section_number
+    section_station_sets: dict[int, set[str]] = {}
+    for section in graph.legacy_sections:
+        ids = _section_stations(graph, section, layers)
+        section_station_sets[section.number] = ids
+        for sid in ids:
+            section_membership[sid] = section.number
+
+    # Determine inter-section edges for entry/exit directives
+    section_exits: dict[int, set[str]] = {}  # section_number -> set of line_ids exiting
+    section_entries: dict[int, set[str]] = {}  # section_number -> set of line_ids entering
+    for edge in graph.edges:
+        src_sec = section_membership.get(edge.source)
+        tgt_sec = section_membership.get(edge.target)
+        if src_sec and tgt_sec and src_sec != tgt_sec:
+            section_exits.setdefault(src_sec, set()).add(edge.line_id)
+            section_entries.setdefault(tgt_sec, set()).add(edge.line_id)
+
+    # Generate output
+    out_lines: list[str] = []
+
+    # Copy header directives
+    for line in text.strip().split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("%%metro title:") or stripped.startswith("%%metro style:") or stripped.startswith("%%metro line:"):
+            out_lines.append(stripped)
+        elif stripped.startswith("%%metro section:"):
+            continue  # Skip legacy sections
+        elif stripped == "":
+            continue
+
+    out_lines.append("")
+    out_lines.append("graph LR")
+
+    # Output each section as a subgraph
+    for section in graph.legacy_sections:
+        ids = section_station_sets.get(section.number, set())
+        if not ids:
+            continue
+
+        section_id = section.name.lower().replace(" ", "_").replace("&", "and").replace("-", "_")
+        out_lines.append(f"    subgraph {section_id} [{section.name}]")
+
+        # Entry directive
+        entries = section_entries.get(section.number)
+        if entries:
+            out_lines.append(f"        %%metro entry: left | {', '.join(sorted(entries))}")
+
+        # Exit directive
+        exits = section_exits.get(section.number)
+        if exits:
+            out_lines.append(f"        %%metro exit: right | {', '.join(sorted(exits))}")
+
+        # Station definitions
+        for sid in sorted(ids, key=lambda s: layers.get(s, 0)):
+            station = graph.stations[sid]
+            if station.label != sid:
+                out_lines.append(f"        {sid}[{station.label}]")
+            else:
+                out_lines.append(f"        {sid}")
+
+        out_lines.append("")
+
+        # Internal edges
+        for edge in graph.edges:
+            if edge.source in ids and edge.target in ids:
+                out_lines.append(f"        {edge.source} -->|{edge.line_id}| {edge.target}")
+
+        out_lines.append("    end")
+        out_lines.append("")
+
+    # Inter-section edges
+    out_lines.append("    %% Inter-section edges")
+    for edge in graph.edges:
+        src_sec = section_membership.get(edge.source)
+        tgt_sec = section_membership.get(edge.target)
+        if src_sec and tgt_sec and src_sec != tgt_sec:
+            out_lines.append(f"    {edge.source} -->|{edge.line_id}| {edge.target}")
+
+    # Unsectioned stations and edges
+    unsectioned = [sid for sid in graph.stations if sid not in section_membership]
+    if unsectioned:
+        out_lines.append("")
+        out_lines.append("    %% Unsectioned stations")
+        for sid in unsectioned:
+            station = graph.stations[sid]
+            if station.label != sid:
+                out_lines.append(f"    {sid}[{station.label}]")
+            else:
+                out_lines.append(f"    {sid}")
+        for edge in graph.edges:
+            if edge.source in unsectioned or edge.target in unsectioned:
+                if not (edge.source in section_membership and edge.target in section_membership):
+                    out_lines.append(f"    {edge.source} -->|{edge.line_id}| {edge.target}")
+
+    result = "\n".join(out_lines) + "\n"
+
+    if output is None:
+        output = input_file.with_name(input_file.stem + "_sections.mmd")
+
+    output.write_text(result)
+    click.echo(f"Converted {len(graph.legacy_sections)} legacy sections -> {output}")
