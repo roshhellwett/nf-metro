@@ -42,15 +42,11 @@ graph LR
         rsem[RSEM]
         salmon_quant[Salmon]
         umi_tools_dedup[UMI-tools dedup]
-        section2_end[...]
 
         star -->|star_rsem| rsem
         star -->|star_salmon| salmon_quant
         salmon_quant -->|star_salmon| umi_tools_dedup
         hisat2_align -->|hisat2| umi_tools_dedup
-        umi_tools_dedup -->|star_salmon| section2_end
-        rsem -->|star_rsem| section2_end
-        umi_tools_dedup -->|hisat2| section2_end
     end
 
     subgraph postprocessing [Post-processing]
@@ -81,4 +77,6 @@ graph LR
     sortmerna -->|hisat2| hisat2_align
     sortmerna -->|pseudo_salmon| salmon_pseudo
     sortmerna -->|pseudo_kallisto| kallisto
-    section2_end -->|star_salmon,star_rsem,hisat2| samtools
+    umi_tools_dedup -->|star_salmon| samtools
+    rsem -->|star_rsem| samtools
+    umi_tools_dedup -->|hisat2| samtools

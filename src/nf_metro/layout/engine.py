@@ -237,10 +237,18 @@ def _align_entry_ports(graph: MetroGraph) -> None:
 
                 # Only align if same grid row
                 if entry_section.grid_row == src_section.grid_row:
-                    station = graph.stations.get(port_id)
-                    if station:
-                        station.y = src.y
-                    port.y = src.y
+                    if entry_section.direction == "TB":
+                        # TB entry port Y is constrained by the first
+                        # internal station; move the source to match.
+                        src.y = port.y
+                        src_port = graph.ports.get(edge.source)
+                        if src_port:
+                            src_port.y = port.y
+                    else:
+                        station = graph.stations.get(port_id)
+                        if station:
+                            station.y = src.y
+                        port.y = src.y
                 break
 
 
