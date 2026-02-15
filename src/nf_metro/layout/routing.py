@@ -160,12 +160,19 @@ def route_edges(
             diag_start_x = mid_x - sign * half_diag
             diag_end_x = mid_x + sign * half_diag
 
-            if sign > 0:
-                diag_start_x = max(diag_start_x, sx + 10)
-                diag_end_x = min(diag_end_x, tx - 10)
+            # Ensure minimum straight track at each station.
+            # Port-adjacent edges need more room so stations sit on
+            # visible straight track, not on a curve.
+            if src.is_port or tgt.is_port:
+                min_straight = curve_radius + 5
             else:
-                diag_start_x = min(diag_start_x, sx - 10)
-                diag_end_x = max(diag_end_x, tx + 10)
+                min_straight = 10
+            if sign > 0:
+                diag_start_x = max(diag_start_x, sx + min_straight)
+                diag_end_x = min(diag_end_x, tx - min_straight)
+            else:
+                diag_start_x = min(diag_start_x, sx - min_straight)
+                diag_end_x = max(diag_end_x, tx + min_straight)
 
             routes.append(RoutedPath(
                 edge=edge, line_id=edge.line_id,
@@ -310,12 +317,15 @@ def route_inter_section_edges(
             diag_start_x = mid_x - sign * half_diag
             diag_end_x = mid_x + sign * half_diag
 
+            # Ensure minimum straight track at each station so the
+            # station sits on a visible horizontal segment, not a curve.
+            min_straight = curve_radius + 15
             if sign > 0:
-                diag_start_x = max(diag_start_x, sx + 10)
-                diag_end_x = min(diag_end_x, tx - 10)
+                diag_start_x = max(diag_start_x, sx + min_straight)
+                diag_end_x = min(diag_end_x, tx - min_straight)
             else:
-                diag_start_x = min(diag_start_x, sx - 10)
-                diag_end_x = max(diag_end_x, tx + 10)
+                diag_start_x = min(diag_start_x, sx - min_straight)
+                diag_end_x = max(diag_end_x, tx + min_straight)
 
             routes.append(RoutedPath(
                 edge=edge, line_id=edge.line_id,

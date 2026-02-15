@@ -19,7 +19,7 @@ def compute_layout(
     max_layers_per_row: int | None = None,
     row_gap: float = 120.0,
     section_gap: float = 3.0,
-    section_x_padding: float = 35.0,
+    section_x_padding: float = 50.0,
     section_y_padding: float = 35.0,
     section_x_gap: float = 80.0,
     section_y_gap: float = 60.0,
@@ -44,7 +44,7 @@ def _compute_section_layout(
     y_spacing: float = 40.0,
     x_offset: float = 80.0,
     y_offset: float = 120.0,
-    section_x_padding: float = 35.0,
+    section_x_padding: float = 50.0,
     section_y_padding: float = 35.0,
     section_x_gap: float = 80.0,
     section_y_gap: float = 60.0,
@@ -83,9 +83,18 @@ def _compute_section_layout(
             station.x = station.layer * x_spacing
             station.y = track_rank[station.track] * y_spacing
 
-        # Compute section bounding box from real stations only
+        # Ensure minimum inner width so stations sit on visible track
         xs = [s.x for s in sub.stations.values()]
         ys = [s.y for s in sub.stations.values()]
+        inner_w = max(xs) - min(xs)
+        min_inner_w = x_spacing
+        if inner_w < min_inner_w:
+            shift = (min_inner_w - inner_w) / 2
+            for station in sub.stations.values():
+                station.x += shift
+            xs = [s.x for s in sub.stations.values()]
+
+        # Compute section bounding box from real stations only
         section.bbox_x = min(xs) - section_x_padding
         section.bbox_y = min(ys) - section_y_padding
         section.bbox_w = (max(xs) - min(xs)) + section_x_padding * 2
