@@ -97,19 +97,6 @@ class Section:
     offset_y: float = 0.0
 
 
-@dataclass
-class LegacySection:
-    """A visual grouping of stations using the old format.
-
-    Old format: %%metro section: number | name | start_node | end_node
-    Kept for backward compatibility.
-    """
-
-    number: int
-    name: str
-    start_node: str
-    end_node: str
-
 
 @dataclass
 class RouteSegment:
@@ -133,7 +120,6 @@ class MetroGraph:
     stations: dict[str, Station] = field(default_factory=dict)
     edges: list[Edge] = field(default_factory=list)
     sections: dict[str, Section] = field(default_factory=dict)
-    legacy_sections: list[LegacySection] = field(default_factory=list)
     ports: dict[str, Port] = field(default_factory=dict)
     junctions: list[str] = field(default_factory=list)
     grid_overrides: dict[str, tuple[int, int]] = field(default_factory=dict)
@@ -149,9 +135,6 @@ class MetroGraph:
 
     def add_section(self, section: Section) -> None:
         self.sections[section.id] = section
-
-    def add_legacy_section(self, section: LegacySection) -> None:
-        self.legacy_sections.append(section)
 
     def add_port(self, port: Port) -> None:
         self.ports[port.id] = port

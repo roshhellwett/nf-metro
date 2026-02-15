@@ -33,18 +33,6 @@ def test_parse_lines():
     assert graph.lines["alt"].color == "#0000ff"
 
 
-def test_parse_sections():
-    text = (
-        "%%metro section: 1 | Preprocessing | a | b\n"
-        "graph LR\n"
-    )
-    graph = parse_metro_mermaid(text)
-    assert len(graph.legacy_sections) == 1
-    assert graph.legacy_sections[0].name == "Preprocessing"
-    assert graph.legacy_sections[0].start_node == "a"
-    assert graph.legacy_sections[0].end_node == "b"
-
-
 def test_parse_nodes_square_bracket():
     text = "graph LR\n    fastqc[FastQC]\n"
     graph = parse_metro_mermaid(text)
@@ -113,16 +101,6 @@ def test_parse_simple_fixture():
     assert len(graph.stations) == 4
     assert len(graph.edges) == 4
     assert len(graph.lines) == 2
-
-
-def test_parse_full_fixture():
-    text = (FIXTURES / "rnaseq_full.mmd").read_text()
-    graph = parse_metro_mermaid(text)
-    assert graph.title == "nf-core/rnaseq"
-    assert len(graph.stations) == 6
-    assert len(graph.edges) == 6
-    assert len(graph.lines) == 3
-    assert len(graph.legacy_sections) == 2
 
 
 def test_ignores_comments():

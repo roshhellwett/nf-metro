@@ -3,9 +3,7 @@
 Uses a simple line-by-line approach rather than a full grammar parser,
 since the Mermaid subset we need is straightforward.
 
-Supports two section formats:
-1. Legacy: %%metro section: number | name | start_node | end_node
-2. New: Mermaid subgraphs with %%metro entry/exit directives
+Sections are defined as Mermaid subgraphs with %%metro entry/exit directives.
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ import re
 
 from nf_metro.parser.model import (
     Edge,
-    LegacySection,
     MetroGraph,
     MetroLine,
     Port,
@@ -100,16 +97,6 @@ def _parse_directive(
                 id=parts[0].strip(),
                 display_name=parts[1].strip(),
                 color=parts[2].strip(),
-            ))
-    elif content.startswith("section:"):
-        # Legacy section format
-        parts = content[len("section:"):].strip().split("|")
-        if len(parts) >= 4:
-            graph.add_legacy_section(LegacySection(
-                number=int(parts[0].strip()),
-                name=parts[1].strip(),
-                start_node=parts[2].strip(),
-                end_node=parts[3].strip(),
             ))
     elif content.startswith("entry:"):
         if current_section_id:

@@ -123,42 +123,43 @@ def place_sections(
             used_rows.add(next_row)
             next_row += 1
 
-    # Compute pixel offsets: accumulate widths per column, heights per row
+    # Compute pixel offsets
     max_col = max(col_assign.values()) if col_assign else 0
-    max_row = max(row_assign.values()) if row_assign else 0
 
-    # Compute max width per column and max height per row
+    # Max width per column (shared across rows for x alignment)
     col_widths: dict[int, float] = defaultdict(float)
-    row_heights: dict[int, float] = defaultdict(float)
-
     for sid, section in graph.sections.items():
         col = col_assign.get(sid, 0)
-        row = row_assign.get(sid, 0)
         col_widths[col] = max(col_widths[col], section.bbox_w)
-        row_heights[row] = max(row_heights[row], section.bbox_h)
 
-    # Compute cumulative offsets
+    # Cumulative x offsets (columns are shared)
     col_offsets: dict[int, float] = {}
     cumulative_x = 0.0
     for col in range(max_col + 1):
         col_offsets[col] = cumulative_x
         cumulative_x += col_widths.get(col, 0) + section_x_gap
 
-    row_offsets: dict[int, float] = {}
-    cumulative_y = 0.0
-    for row in range(max_row + 1):
-        row_offsets[row] = cumulative_y
-        cumulative_y += row_heights.get(row, 0) + section_y_gap
+    # Per-column y stacking: each column independently stacks its sections
+    # with a fixed gap, so a tall section in one column doesn't push down
+    # sections in another column.
+    col_sections: dict[int, list[str]] = defaultdict(list)
+    for sid in graph.sections:
+        col_sections[col_assign.get(sid, 0)].append(sid)
+
+    # Sort by row within each column
+    for col in col_sections:
+        col_sections[col].sort(key=lambda s: row_assign.get(s, 0))
 
     # Set section offsets
-    for sid, section in graph.sections.items():
-        col = col_assign.get(sid, 0)
-        row = row_assign.get(sid, 0)
-        section.grid_col = col
-        section.grid_row = row
-        # Top-left align: tops aligned across rows, lefts aligned down columns
-        section.offset_x = col_offsets.get(col, 0)
-        section.offset_y = row_offsets.get(row, 0)
+    for col, sids in col_sections.items():
+        cumulative_y = 0.0
+        for sid in sids:
+            section = graph.sections[sid]
+            section.grid_col = col_assign.get(sid, 0)
+            section.grid_row = row_assign.get(sid, 0)
+            section.offset_x = col_offsets.get(col, 0)
+            section.offset_y = cumulative_y
+            cumulative_y += section.bbox_h + section_y_gap
 
 
 def position_ports(section: Section, graph: MetroGraph) -> None:

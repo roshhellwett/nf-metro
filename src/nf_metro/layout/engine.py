@@ -1,17 +1,9 @@
 """Layout coordinator: combines layer assignment, ordering, and coordinate mapping.
 
-Supports two modes:
-1. Legacy/global layout: all stations laid out together, sections are visual overlays
-2. Section-first layout: sections are laid out independently, then placed on a meta-graph
-
-For folded layouts (legacy mode), when a diagram exceeds max_layers_per_row,
-it wraps onto a new row with reversed direction.
+Section-first layout: sections are laid out independently, then placed on a meta-graph.
 """
 
 from __future__ import annotations
-
-import math
-from collections import defaultdict, deque
 
 from nf_metro.layout.layers import assign_layers
 from nf_metro.layout.ordering import assign_tracks
@@ -32,35 +24,18 @@ def compute_layout(
     section_x_gap: float = 80.0,
     section_y_gap: float = 60.0,
 ) -> None:
-    """Compute layout positions for all stations in the graph.
-
-    Dispatches to section-first layout if graph has first-class sections,
-    otherwise falls back to global layout (legacy path).
-    """
-    if graph.sections:
-        _compute_section_layout(
-            graph,
-            x_spacing=x_spacing,
-            y_spacing=y_spacing,
-            x_offset=x_offset,
-            y_offset=y_offset,
-            section_x_padding=section_x_padding,
-            section_y_padding=section_y_padding,
-            section_x_gap=section_x_gap,
-            section_y_gap=section_y_gap,
-        )
-    else:
-        _compute_global_layout(
-            graph,
-            x_spacing=x_spacing,
-            y_spacing=y_spacing,
-            x_offset=x_offset,
-            y_offset=y_offset,
-            max_layers_per_row=max_layers_per_row,
-            row_gap=row_gap,
-            section_gap=section_gap,
-            section_x_padding=section_x_padding,
-        )
+    """Compute layout positions for all stations in the graph."""
+    _compute_section_layout(
+        graph,
+        x_spacing=x_spacing,
+        y_spacing=y_spacing,
+        x_offset=x_offset,
+        y_offset=y_offset,
+        section_x_padding=section_x_padding,
+        section_y_padding=section_y_padding,
+        section_x_gap=section_x_gap,
+        section_y_gap=section_y_gap,
+    )
 
 
 def _compute_section_layout(
@@ -98,15 +73,15 @@ def _compute_section_layout(
         if not layers:
             continue
 
-        # Map to local pixel coordinates
-        all_tracks = list(tracks.values())
-        min_track = min(all_tracks) if all_tracks else 0
+        # Compact track values to consecutive rows so there are no gaps
+        unique_tracks = sorted(set(tracks.values()))
+        track_rank = {t: i for i, t in enumerate(unique_tracks)}
 
         for sid, station in sub.stations.items():
             station.layer = layers.get(sid, 0)
             station.track = tracks.get(sid, 0)
             station.x = station.layer * x_spacing
-            station.y = (station.track - min_track) * y_spacing
+            station.y = track_rank[station.track] * y_spacing
 
         # Compute section bounding box from real stations only
         xs = [s.x for s in sub.stations.values()]
@@ -276,188 +251,3 @@ def _build_section_subgraph(graph: MetroGraph, section: Section) -> MetroGraph:
             ))
 
     return sub
-
-
-# --- Legacy global layout (unchanged from original) ---
-
-def _section_stations(graph: MetroGraph, section, layers: dict[str, int]) -> set[str]:
-    """Find stations belonging to a legacy section via flood-fill within the layer range."""
-    start = graph.stations.get(section.start_node)
-    end = graph.stations.get(section.end_node)
-    if not start or not end:
-        return set()
-
-    min_layer = min(layers.get(section.start_node, 0), layers.get(section.end_node, 0))
-    max_layer = max(layers.get(section.start_node, 0), layers.get(section.end_node, 0))
-
-    adj: dict[str, set[str]] = defaultdict(set)
-    for edge in graph.edges:
-        sl = layers.get(edge.source, -1)
-        tl = layers.get(edge.target, -1)
-        if min_layer <= sl <= max_layer and min_layer <= tl <= max_layer:
-            adj[edge.source].add(edge.target)
-            adj[edge.target].add(edge.source)
-
-    visited: set[str] = set()
-    queue: deque[str] = deque([section.start_node])
-    while queue:
-        node = queue.popleft()
-        if node in visited:
-            continue
-        nl = layers.get(node, -1)
-        if nl < min_layer or nl > max_layer:
-            continue
-        visited.add(node)
-        for nb in adj[node]:
-            if nb not in visited:
-                queue.append(nb)
-
-    return visited
-
-
-def _compute_global_layout(
-    graph: MetroGraph,
-    x_spacing: float = 140.0,
-    y_spacing: float = 45.0,
-    x_offset: float = 80.0,
-    y_offset: float = 120.0,
-    max_layers_per_row: int | None = None,
-    row_gap: float = 120.0,
-    section_gap: float = 3.0,
-    section_x_padding: float = 35.0,
-) -> None:
-    """Compute layout using global flat approach (legacy path)."""
-    # Step 1: Assign layers (horizontal position)
-    layers = assign_layers(graph)
-
-    # Step 2: Assign tracks (vertical position within layer)
-    tracks = assign_tracks(graph, layers)
-
-    if not layers:
-        return
-
-    # Step 2b: Insert vertical gaps between sections so boxes don't overlap
-    if graph.legacy_sections and section_gap > 0:
-        _insert_section_gaps(graph, layers, tracks, section_gap)
-
-    max_layer = max(layers.values())
-
-    # Auto-calculate fold point for roughly 2:1 aspect ratio
-    if max_layers_per_row is None:
-        total = max_layer + 1
-        if total <= 10:
-            max_layers_per_row = total  # no fold for small diagrams
-        else:
-            max_layers_per_row = math.ceil(total / 2)
-
-    # Compute the track span for row height calculation
-    all_tracks = list(tracks.values())
-    min_track = min(all_tracks) if all_tracks else 0
-    max_track = max(all_tracks) if all_tracks else 0
-    track_span = max_track - min_track
-    row_pixel_height = track_span * y_spacing + row_gap
-
-    # Step 3: Map to pixel coordinates with folding
-    for sid, station in graph.stations.items():
-        station.layer = layers.get(sid, 0)
-        station.track = tracks.get(sid, 0)
-
-        # Which row and position within the row
-        row = station.layer // max_layers_per_row
-        layer_in_row = station.layer % max_layers_per_row
-
-        # Alternate direction: even rows L->R, odd rows R->L
-        if row % 2 == 0:
-            station.x = x_offset + layer_in_row * x_spacing
-        else:
-            station.x = x_offset + (max_layers_per_row - 1 - layer_in_row) * x_spacing
-
-        station.y = y_offset + (station.track - min_track) * y_spacing + row * row_pixel_height
-
-    # Step 4: Insert horizontal gaps between section boxes
-    if graph.legacy_sections and section_x_padding > 0:
-        _insert_horizontal_section_gaps(graph, layers, section_x_padding)
-
-
-def _insert_horizontal_section_gaps(
-    graph: MetroGraph,
-    layers: dict[str, int],
-    section_x_padding: float,
-    min_gap: float = 10.0,
-) -> None:
-    """Shift stations right to prevent legacy section boxes from overlapping horizontally."""
-    section_ranges: list[tuple[set[str], float, float]] = []
-    for section in graph.legacy_sections:
-        ids = _section_stations(graph, section, layers)
-        if not ids:
-            continue
-        xs = [graph.stations[sid].x for sid in ids if sid in graph.stations]
-        if xs:
-            section_ranges.append((ids, min(xs), max(xs)))
-
-    if len(section_ranges) < 2:
-        return
-
-    section_ranges.sort(key=lambda r: r[1])
-
-    for i in range(1, len(section_ranges)):
-        _, _, prev_xmax = section_ranges[i - 1]
-        curr_ids, curr_xmin, curr_xmax = section_ranges[i]
-
-        if curr_xmin <= prev_xmax:
-            continue
-
-        prev_box_right = prev_xmax + section_x_padding
-        curr_box_left = curr_xmin - section_x_padding
-        gap = curr_box_left - prev_box_right
-
-        if gap < min_gap:
-            shift = min_gap - gap
-            threshold = curr_xmin
-            for station in graph.stations.values():
-                if station.x >= threshold:
-                    station.x += shift
-            for j in range(i, len(section_ranges)):
-                jids, jxmin, jxmax = section_ranges[j]
-                if jxmin >= threshold:
-                    section_ranges[j] = (jids, jxmin + shift, jxmax + shift)
-
-
-def _insert_section_gaps(
-    graph: MetroGraph,
-    layers: dict[str, int],
-    tracks: dict[str, float],
-    gap: float,
-) -> None:
-    """Add extra track spacing between non-overlapping legacy sections."""
-    section_info: list[tuple[set[str], float, float]] = []
-    for section in graph.legacy_sections:
-        ids = _section_stations(graph, section, layers)
-        if not ids:
-            continue
-        trks = [tracks[sid] for sid in ids if sid in tracks]
-        if trks:
-            section_info.append((ids, min(trks), max(trks)))
-
-    section_info.sort(key=lambda x: x[1])
-
-    cumulative_shift = 0.0
-    shifted_stations: set[str] = set()
-
-    for i in range(1, len(section_info)):
-        prev_ids, prev_min, prev_max = section_info[i - 1]
-        curr_ids, curr_min, curr_max = section_info[i]
-
-        if curr_min > prev_max:
-            actual_gap = curr_min - prev_max
-            if actual_gap < gap:
-                extra = gap - actual_gap
-                cumulative_shift += extra
-
-        if cumulative_shift > 0:
-            threshold = curr_min
-            for sid, trk in tracks.items():
-                if trk >= threshold and sid not in shifted_stations:
-                    tracks[sid] = trk + cumulative_shift
-                    shifted_stations.add(sid)
-            section_info[i] = (curr_ids, curr_min + cumulative_shift, curr_max + cumulative_shift)

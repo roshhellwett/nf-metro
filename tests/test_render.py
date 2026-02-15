@@ -67,21 +67,6 @@ def test_render_empty_graph():
     assert "svg" in svg
 
 
-def test_render_with_legacy_sections():
-    graph = parse_metro_mermaid(
-        "%%metro title: Sections Test\n"
-        "%%metro line: main | Main | #ff0000\n"
-        "%%metro section: 1 | Processing | a | b\n"
-        "graph LR\n"
-        "    a[Input]\n"
-        "    b[Output]\n"
-        "    a -->|main| b\n"
-    )
-    compute_layout(graph)
-    svg = render_svg(graph, NFCORE_THEME)
-    assert "Processing" in svg
-
-
 def test_render_legend():
     svg = _render_simple()
     # Legend should contain the line display name

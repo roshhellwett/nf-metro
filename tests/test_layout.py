@@ -64,20 +64,44 @@ def test_track_assignment():
 
 
 def test_compute_layout_sets_coordinates():
-    graph = _make_simple_graph()
-    compute_layout(graph, x_spacing=100, y_spacing=50, x_offset=10, y_offset=10)
-    # Check that coordinates were set
-    assert graph.stations["a"].x == 10  # layer 0
-    assert graph.stations["b"].x == 110  # layer 1
-    assert graph.stations["c"].x == 210  # layer 2
+    """Layout assigns increasing x for a linear chain within a section."""
+    graph = parse_metro_mermaid(
+        "%%metro line: main | Main | #ff0000\n"
+        "graph LR\n"
+        "    subgraph sec1 [Section]\n"
+        "        a[A]\n"
+        "        b[B]\n"
+        "        c[C]\n"
+        "        a -->|main| b\n"
+        "        b -->|main| c\n"
+        "    end\n"
+    )
+    compute_layout(graph, x_spacing=100, y_spacing=50)
+    # Stations should be in order by x
+    assert graph.stations["a"].x < graph.stations["b"].x
+    assert graph.stations["b"].x < graph.stations["c"].x
 
 
 def test_compute_layout_branching():
-    graph = _make_branching_graph()
-    compute_layout(graph, x_spacing=100, y_spacing=50, x_offset=10, y_offset=10)
-    # a at layer 0
+    """Layout assigns correct layers for a diamond pattern within a section."""
+    graph = parse_metro_mermaid(
+        "%%metro line: main | Main | #ff0000\n"
+        "%%metro line: alt | Alt | #0000ff\n"
+        "graph LR\n"
+        "    subgraph sec1 [Section]\n"
+        "        a[A]\n"
+        "        b[B]\n"
+        "        c[C]\n"
+        "        d[D]\n"
+        "        a -->|main| b\n"
+        "        b -->|main| d\n"
+        "        a -->|alt| c\n"
+        "        c -->|alt| d\n"
+        "    end\n"
+    )
+    compute_layout(graph, x_spacing=100, y_spacing=50)
+    # a at layer 0, d at layer 2
     assert graph.stations["a"].layer == 0
-    # d at layer 2
     assert graph.stations["d"].layer == 2
     # b and c at same layer but different tracks
     assert graph.stations["b"].layer == graph.stations["c"].layer == 1
