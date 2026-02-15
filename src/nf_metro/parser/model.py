@@ -84,6 +84,8 @@ class Section:
     # Hints from %%metro entry/exit directives: list of (side, [line_ids])
     exit_hints: list[tuple[PortSide, list[str]]] = field(default_factory=list)
     entry_hints: list[tuple[PortSide, list[str]]] = field(default_factory=list)
+    # Internal flow direction ("LR" = left-to-right, "TB" = top-to-bottom)
+    direction: str = "LR"
     # Bounding box (set by layout engine)
     bbox_x: float = 0.0
     bbox_y: float = 0.0
@@ -92,6 +94,7 @@ class Section:
     # Grid position (for section placement)
     grid_col: int = -1  # -1 means auto
     grid_row: int = -1
+    grid_row_span: int = 1
     # Global offset (set by section placement)
     offset_x: float = 0.0
     offset_y: float = 0.0
@@ -122,7 +125,7 @@ class MetroGraph:
     sections: dict[str, Section] = field(default_factory=dict)
     ports: dict[str, Port] = field(default_factory=dict)
     junctions: list[str] = field(default_factory=list)
-    grid_overrides: dict[str, tuple[int, int]] = field(default_factory=dict)
+    grid_overrides: dict[str, tuple[int, int, int]] = field(default_factory=dict)
 
     def add_line(self, line: MetroLine) -> None:
         self.lines[line.id] = line

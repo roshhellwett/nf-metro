@@ -87,10 +87,11 @@ def place_sections(
             col_assign[sid] = 0
 
     # Apply grid overrides
-    for sid, (col, row) in graph.grid_overrides.items():
+    for sid, (col, row, rowspan) in graph.grid_overrides.items():
         if sid in graph.sections:
             graph.sections[sid].grid_col = col
             graph.sections[sid].grid_row = row
+            graph.sections[sid].grid_row_span = rowspan
             col_assign[sid] = col
 
     # Group sections by column
@@ -108,11 +109,13 @@ def place_sections(
         # Sort auto sections by their number (definition order)
         auto.sort(key=lambda s: graph.sections[s].number)
 
-        # Place explicit ones first
+        # Place explicit ones first, reserving all spanned rows
         used_rows: set[int] = set()
         for sid, row in explicit:
             row_assign[sid] = row
-            used_rows.add(row)
+            span = graph.sections[sid].grid_row_span
+            for r in range(row, row + span):
+                used_rows.add(r)
 
         # Fill in auto sections
         next_row = 0
@@ -139,27 +142,49 @@ def place_sections(
         col_offsets[col] = cumulative_x
         cumulative_x += col_widths.get(col, 0) + section_x_gap
 
-    # Per-column y stacking: each column independently stacks its sections
-    # with a fixed gap, so a tall section in one column doesn't push down
-    # sections in another column.
-    col_sections: dict[int, list[str]] = defaultdict(list)
+    # Global row heights: max bbox_h per row across ALL columns
+    # (only from single-row sections, since spanning sections derive height)
+    max_row = max(row_assign.values()) if row_assign else 0
+    # Account for rows occupied by spanning sections
     for sid in graph.sections:
-        col_sections[col_assign.get(sid, 0)].append(sid)
+        span = graph.sections[sid].grid_row_span
+        row = row_assign.get(sid, 0)
+        max_row = max(max_row, row + span - 1)
 
-    # Sort by row within each column
-    for col in col_sections:
-        col_sections[col].sort(key=lambda s: row_assign.get(s, 0))
+    row_heights: dict[int, float] = defaultdict(float)
+    for sid, section in graph.sections.items():
+        if section.grid_row_span == 1:
+            row = row_assign.get(sid, 0)
+            row_heights[row] = max(row_heights[row], section.bbox_h)
 
-    # Set section offsets
-    for col, sids in col_sections.items():
-        cumulative_y = 0.0
-        for sid in sids:
-            section = graph.sections[sid]
-            section.grid_col = col_assign.get(sid, 0)
-            section.grid_row = row_assign.get(sid, 0)
-            section.offset_x = col_offsets.get(col, 0)
-            section.offset_y = cumulative_y
-            cumulative_y += section.bbox_h + section_y_gap
+    # Ensure all rows have an entry (even if only occupied by spanning sections)
+    for r in range(max_row + 1):
+        if r not in row_heights:
+            row_heights[r] = 0.0
+
+    # Cumulative y offsets per row
+    row_offsets: dict[int, float] = {}
+    cumulative_y = 0.0
+    for r in range(max_row + 1):
+        row_offsets[r] = cumulative_y
+        cumulative_y += row_heights[r] + section_y_gap
+
+    # Set section offsets and adjust height for spanning sections
+    for sid, section in graph.sections.items():
+        section.grid_col = col_assign.get(sid, 0)
+        section.grid_row = row_assign.get(sid, 0)
+        section.offset_x = col_offsets.get(section.grid_col, 0)
+        section.offset_y = row_offsets.get(section.grid_row, 0)
+
+        # For spanning sections, set bbox_h to cover all spanned rows + gaps
+        span = section.grid_row_span
+        if span > 1:
+            start_row = section.grid_row
+            spanned_height = sum(
+                row_heights[r] for r in range(start_row, start_row + span)
+            )
+            spanned_height += (span - 1) * section_y_gap
+            section.bbox_h = spanned_height
 
 
 def position_ports(section: Section, graph: MetroGraph) -> None:

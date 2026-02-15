@@ -21,6 +21,8 @@ class LabelPlacement:
     y: float
     above: bool
     angle: float = 0.0  # Horizontal by default
+    text_anchor: str = "middle"
+    dominant_baseline: str = ""  # Empty means use above/below logic
 
 
 def _label_bbox(
@@ -81,6 +83,30 @@ def place_labels(
     placements: list[LabelPlacement] = []
 
     for i, station in enumerate(sorted_stations):
+        # Check if this is a TB section vertical station (layer > 0)
+        is_tb_vert = False
+        if station.section_id:
+            sec = graph.sections.get(station.section_id)
+            if sec and sec.direction == "TB" and station.layer > 0:
+                is_tb_vert = True
+
+        if is_tb_vert:
+            # Place label to the left of the horizontal pill
+            n_lines = len(graph.station_lines(station.id))
+            offset_span = (n_lines - 1) * 3.0
+            pill_left = station.x - offset_span / 2 - 5
+            candidate = LabelPlacement(
+                station_id=station.id,
+                text=station.label,
+                x=pill_left - 6,
+                y=station.y,
+                above=True,
+                text_anchor="end",
+                dominant_baseline="central",
+            )
+            placements.append(candidate)
+            continue
+
         # Alternate by layer (column): even layers below, odd layers above
         start_above = (station.layer % 2 == 1)
 

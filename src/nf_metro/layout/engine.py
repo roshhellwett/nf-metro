@@ -84,19 +84,38 @@ def _compute_section_layout(
         for sid, station in sub.stations.items():
             station.layer = layers.get(sid, 0)
             station.track = tracks.get(sid, 0)
-            station.x = station.layer * x_spacing + layer_extra.get(station.layer, 0)
-            station.y = track_rank[station.track] * y_spacing
+            if section.direction == "TB":
+                # Top-to-bottom: layers map to Y, tracks map to X
+                # Layer 0 stays at entry level; layer 1+ shift right
+                # so the elbow (horizontal-to-vertical turn) happens
+                # AFTER the first station, not at it.
+                station.x = track_rank[station.track] * x_spacing
+                station.y = station.layer * y_spacing + layer_extra.get(station.layer, 0)
+                if station.layer > 0:
+                    station.x += x_spacing
+            else:
+                station.x = station.layer * x_spacing + layer_extra.get(station.layer, 0)
+                station.y = track_rank[station.track] * y_spacing
 
-        # Ensure minimum inner width so stations sit on visible track
+        # Ensure minimum inner extent so stations sit on visible track
         xs = [s.x for s in sub.stations.values()]
         ys = [s.y for s in sub.stations.values()]
-        inner_w = max(xs) - min(xs)
-        min_inner_w = x_spacing
-        if inner_w < min_inner_w:
-            shift = (min_inner_w - inner_w) / 2
-            for station in sub.stations.values():
-                station.x += shift
-            xs = [s.x for s in sub.stations.values()]
+        if section.direction == "TB":
+            inner_h = max(ys) - min(ys)
+            min_inner_h = y_spacing
+            if inner_h < min_inner_h:
+                shift = (min_inner_h - inner_h) / 2
+                for station in sub.stations.values():
+                    station.y += shift
+                ys = [s.y for s in sub.stations.values()]
+        else:
+            inner_w = max(xs) - min(xs)
+            min_inner_w = x_spacing
+            if inner_w < min_inner_w:
+                shift = (min_inner_w - inner_w) / 2
+                for station in sub.stations.values():
+                    station.x += shift
+                xs = [s.x for s in sub.stations.values()]
 
         # Compute section bounding box from real stations only
         section.bbox_x = min(xs) - section_x_padding

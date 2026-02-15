@@ -64,9 +64,9 @@ def render_svg(
     if graph.sections:
         _render_first_class_sections(d, graph, theme)
 
-    # Route edges
-    routes = route_edges(graph)
+    # Route edges (compute offsets first so TB routes can pre-apply them)
     station_offsets = compute_station_offsets(graph)
+    routes = route_edges(graph, station_offsets=station_offsets)
 
     # Draw edges (lines) behind stations
     _render_edges(d, graph, routes, station_offsets, theme)
@@ -149,21 +149,25 @@ def _render_edges(
         line = graph.lines.get(route.line_id)
         color = line.color if line else "#888888"
 
-        src_off = station_offsets.get((route.edge.source, route.line_id), 0.0)
-        tgt_off = station_offsets.get((route.edge.target, route.line_id), 0.0)
+        if route.offsets_applied:
+            # TB section routes have offsets pre-applied in the routing code
+            pts = list(route.points)
+        else:
+            src_off = station_offsets.get((route.edge.source, route.line_id), 0.0)
+            tgt_off = station_offsets.get((route.edge.target, route.line_id), 0.0)
 
-        orig_sy = route.points[0][1]
-        orig_ty = route.points[-1][1]
-        pts = []
-        for i, (x, y) in enumerate(route.points):
-            if i == 0:
-                pts.append((x, y + src_off))
-            elif i == len(route.points) - 1:
-                pts.append((x, y + tgt_off))
-            elif abs(y - orig_sy) <= abs(y - orig_ty):
-                pts.append((x, y + src_off))
-            else:
-                pts.append((x, y + tgt_off))
+            orig_sy = route.points[0][1]
+            orig_ty = route.points[-1][1]
+            pts = []
+            for i, (x, y) in enumerate(route.points):
+                if i == 0:
+                    pts.append((x, y + src_off))
+                elif i == len(route.points) - 1:
+                    pts.append((x, y + tgt_off))
+                elif abs(y - orig_sy) <= abs(y - orig_ty):
+                    pts.append((x, y + src_off))
+                else:
+                    pts.append((x, y + tgt_off))
 
         if len(pts) == 2:
             d.append(draw.Line(
@@ -228,7 +232,11 @@ def _render_stations(
     theme: Theme,
     station_offsets: dict[tuple[str, str], float] | None = None,
 ) -> None:
-    """Render stations as vertical oblongs (pill shapes).
+    """Render stations as pill shapes.
+
+    Normal stations get vertical pills (tall, narrow). Stations in a TB
+    section's vertical part (layer > 0) get horizontal pills (wide, short)
+    since the lines run vertically through them.
 
     Skips port stations (is_port=True).
     """
@@ -237,7 +245,13 @@ def _render_stations(
             continue
 
         r = theme.station_radius
-        w = r * 2
+
+        # Determine if this is a TB vertical station (rotated pill)
+        is_tb_vert = False
+        if station.section_id:
+            sec = graph.sections.get(station.section_id)
+            if sec and sec.direction == "TB" and station.layer > 0:
+                is_tb_vert = True
 
         if station_offsets:
             line_offsets = [
@@ -253,16 +267,33 @@ def _render_stations(
             min_off = max_off = 0.0
 
         span = max_off - min_off
-        h = span + r * 2
-        cy = station.y + (min_off + max_off) / 2
-        d.append(draw.Rectangle(
-            station.x - w / 2, cy - h / 2,
-            w, h,
-            rx=r, ry=r,
-            fill=theme.station_fill,
-            stroke=theme.station_stroke,
-            stroke_width=theme.station_stroke_width,
-        ))
+
+        if is_tb_vert:
+            # Horizontal pill: lines spread along X axis
+            w = span + r * 2
+            h = r * 2
+            cx = station.x + (min_off + max_off) / 2
+            d.append(draw.Rectangle(
+                cx - w / 2, station.y - h / 2,
+                w, h,
+                rx=r, ry=r,
+                fill=theme.station_fill,
+                stroke=theme.station_stroke,
+                stroke_width=theme.station_stroke_width,
+            ))
+        else:
+            # Vertical pill: lines spread along Y axis
+            w = r * 2
+            h = span + r * 2
+            cy = station.y + (min_off + max_off) / 2
+            d.append(draw.Rectangle(
+                station.x - w / 2, cy - h / 2,
+                w, h,
+                rx=r, ry=r,
+                fill=theme.station_fill,
+                stroke=theme.station_stroke,
+                stroke_width=theme.station_stroke_width,
+            ))
 
 
 def _render_labels(
@@ -270,16 +301,27 @@ def _render_labels(
     labels: list[LabelPlacement],
     theme: Theme,
 ) -> None:
-    """Render horizontal station name labels."""
+    """Render station name labels."""
     for label in labels:
-        baseline = "auto" if label.above else "hanging"
-
-        d.append(draw.Text(
-            label.text,
-            theme.label_font_size,
-            label.x, label.y,
-            fill=theme.label_color,
-            font_family=theme.label_font_family,
-            text_anchor="middle",
-            dominant_baseline=baseline,
-        ))
+        if label.dominant_baseline:
+            # Custom placement (e.g. TB vertical stations: right-side labels)
+            d.append(draw.Text(
+                label.text,
+                theme.label_font_size,
+                label.x, label.y,
+                fill=theme.label_color,
+                font_family=theme.label_font_family,
+                text_anchor=label.text_anchor,
+                dominant_baseline=label.dominant_baseline,
+            ))
+        else:
+            baseline = "auto" if label.above else "hanging"
+            d.append(draw.Text(
+                label.text,
+                theme.label_font_size,
+                label.x, label.y,
+                fill=theme.label_color,
+                font_family=theme.label_font_family,
+                text_anchor="middle",
+                dominant_baseline=baseline,
+            ))

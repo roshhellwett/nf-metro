@@ -22,12 +22,14 @@ class RoutedPath:
     points: list[tuple[float, float]]
     is_inter_section: bool = False
     curve_radii: list[float] | None = None
+    offsets_applied: bool = False
 
 
 def route_edges(
     graph: MetroGraph,
     diagonal_run: float = 30.0,
     curve_radius: float = 10.0,
+    station_offsets: dict[tuple[str, str], float] | None = None,
 ) -> list[RoutedPath]:
     """Route all edges with smooth direction changes.
 
@@ -45,6 +47,9 @@ def route_edges(
     line_order = list(graph.lines.keys())
     line_priority = {lid: i for i, lid in enumerate(line_order)}
     offset_step = 3.0
+
+    # Identify TB sections for special routing
+    tb_sections = {sid for sid, s in graph.sections.items() if s.direction == "TB"}
 
     # Pre-compute bundle assignments: groups inter-section edges that
     # share the same vertical channel so they get consistent per-line
@@ -118,6 +123,67 @@ def route_edges(
                     ],
                     is_inter_section=True,
                     curve_radii=[r_first, r_second],
+                ))
+            continue
+
+        # TB section internal edges: L-shaped elbows and vertical runs
+        # with per-line offsets pre-applied to the correct axis.
+        src_sec = src.section_id
+        tgt_sec = tgt.section_id
+        if (src_sec and src_sec == tgt_sec and src_sec in tb_sections
+                and not src.is_port and not tgt.is_port):
+            src_off = station_offsets.get((edge.source, edge.line_id), 0.0) if station_offsets else 0.0
+            tgt_off = station_offsets.get((edge.target, edge.line_id), 0.0) if station_offsets else 0.0
+            src_is_vert = src.layer > 0
+            tgt_is_vert = tgt.layer > 0
+
+            # For downward-turning elbows: reverse X offsets so that the
+            # top line in the horizontal bundle becomes the rightmost in
+            # the vertical bundle (concentric curves at the corner).
+            def _reverse_off(station_id: str, off: float) -> float:
+                all_offs = [
+                    station_offsets.get((station_id, lid), 0.0)
+                    for lid in graph.station_lines(station_id)
+                ] if station_offsets else []
+                max_off = max(all_offs) if all_offs else 0.0
+                return max_off - off
+
+            if not src_is_vert and tgt_is_vert:
+                # L-shaped elbow: horizontal run then vertical drop.
+                # Y offset on horizontal segment, reversed X offset on vertical.
+                # Concentric curve radii: outer line (rightmost) gets largest radius.
+                rev_tgt_off = _reverse_off(edge.target, tgt_off)
+                routes.append(RoutedPath(
+                    edge=edge, line_id=edge.line_id,
+                    points=[
+                        (sx, sy + src_off),
+                        (tx + rev_tgt_off, sy + src_off),
+                        (tx + rev_tgt_off, ty),
+                    ],
+                    offsets_applied=True,
+                    curve_radii=[curve_radius + rev_tgt_off],
+                ))
+            elif src_is_vert and tgt_is_vert:
+                # Vertical run: straight line with reversed X offsets
+                rev_src_off = _reverse_off(edge.source, src_off)
+                rev_tgt_off = _reverse_off(edge.target, tgt_off)
+                routes.append(RoutedPath(
+                    edge=edge, line_id=edge.line_id,
+                    points=[
+                        (sx + rev_src_off, sy),
+                        (tx + rev_tgt_off, ty),
+                    ],
+                    offsets_applied=True,
+                ))
+            else:
+                # Horizontal run within TB section (layer 0 to layer 0)
+                routes.append(RoutedPath(
+                    edge=edge, line_id=edge.line_id,
+                    points=[
+                        (sx, sy + src_off),
+                        (tx, ty + tgt_off),
+                    ],
+                    offsets_applied=True,
                 ))
             continue
 

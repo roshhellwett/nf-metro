@@ -5,6 +5,7 @@
 %%metro line: hisat2 | Aligner: HISAT2, Quantification: None | #f5c542
 %%metro line: pseudo_salmon | Pseudo-aligner: Salmon, Quantification: Salmon | #e63946
 %%metro line: pseudo_kallisto | Pseudo-aligner: Kallisto, Quantification: Kallisto | #7b2d3b
+%%metro grid: postprocessing | 2,0,2
 
 graph LR
     subgraph preprocessing [Pre-processing]
@@ -35,6 +36,7 @@ graph LR
 
     subgraph genome_align [Genome alignment & quantification]
         %%metro entry: left | star_salmon, star_rsem, hisat2
+        %%metro exit: right | star_salmon, star_rsem, hisat2
         star[STAR]
         hisat2_align[HISAT2]
         rsem[RSEM]
@@ -49,6 +51,19 @@ graph LR
         umi_tools_dedup -->|star_salmon| section2_end
         rsem -->|star_rsem| section2_end
         umi_tools_dedup -->|hisat2| section2_end
+    end
+
+    subgraph postprocessing [Post-processing]
+        %%metro direction: TB
+        %%metro entry: left | star_salmon, star_rsem, hisat2
+        samtools[SAMtools]
+        picard[Picard]
+        bedtools[BEDTools]
+        bedgraph[bedGraphToBigWig]
+
+        samtools -->|star_salmon,star_rsem,hisat2| picard
+        picard -->|star_salmon,star_rsem,hisat2| bedtools
+        bedtools -->|star_salmon,star_rsem,hisat2| bedgraph
     end
 
     subgraph pseudo_align [Pseudo-alignment & quantification]
@@ -66,3 +81,4 @@ graph LR
     sortmerna -->|hisat2| hisat2_align
     sortmerna -->|pseudo_salmon| salmon_pseudo
     sortmerna -->|pseudo_kallisto| kallisto
+    section2_end -->|star_salmon,star_rsem,hisat2| samtools

@@ -104,6 +104,11 @@ def _parse_directive(
     elif content.startswith("exit:"):
         if current_section_id:
             _parse_port_hint(content, graph, current_section_id, is_entry=False)
+    elif content.startswith("direction:"):
+        if current_section_id and current_section_id in graph.sections:
+            direction = content[len("direction:"):].strip().upper()
+            if direction in ("LR", "TB"):
+                graph.sections[current_section_id].direction = direction
     elif content.startswith("grid:"):
         _parse_grid_directive(content, graph)
 
@@ -147,7 +152,7 @@ def _parse_port_hint(
 
 
 def _parse_grid_directive(content: str, graph: MetroGraph) -> None:
-    """Parse %%metro grid: section_id | col,row directive."""
+    """Parse %%metro grid: section_id | col,row[,rowspan] directive."""
     rest = content[len("grid:"):].strip()
     parts = rest.split("|")
     if len(parts) < 2:
@@ -161,7 +166,8 @@ def _parse_grid_directive(content: str, graph: MetroGraph) -> None:
     try:
         col = int(coords[0].strip())
         row = int(coords[1].strip())
-        graph.grid_overrides[section_id] = (col, row)
+        rowspan = int(coords[2].strip()) if len(coords) >= 3 else 1
+        graph.grid_overrides[section_id] = (col, row, rowspan)
     except ValueError:
         return
 
