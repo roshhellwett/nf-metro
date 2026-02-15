@@ -256,29 +256,42 @@ def route_edges(
             if uses_rev_x:
                 # Reversed X offsets on vertical segment to match
                 # the TB section's convention above.
-                all_offs = [
+                all_src_offs = [
                     station_offsets.get((edge.source, lid), 0.0)
                     for lid in graph.station_lines(edge.source)
                 ]
-                max_off = max(all_offs) if all_offs else 0.0
-                rev_src_off = max_off - src_off
+                max_src_off = max(all_src_offs) if all_src_offs else 0.0
+                rev_src_off = max_src_off - src_off
+
+                # Also reverse target Y offsets so bundle ordering
+                # is preserved at the corner: leftmost vertical line
+                # becomes topmost horizontal line when turning left.
+                all_tgt_offs = [
+                    station_offsets.get((edge.target, lid), 0.0)
+                    for lid in graph.station_lines(edge.target)
+                ]
+                max_tgt_off = max(all_tgt_offs) if all_tgt_offs else 0.0
+                rev_tgt_off = max_tgt_off - tgt_off
 
                 if abs(dx) < 1.0:
                     routes.append(RoutedPath(
                         edge=edge, line_id=edge.line_id,
-                        points=[(sx + rev_src_off, sy), (tx, ty + tgt_off)],
+                        points=[(sx + rev_src_off, sy), (tx, ty + rev_tgt_off)],
                         offsets_applied=True,
                     ))
                 else:
-                    # L-shape: vertical drop (reversed X) then horizontal (Y)
+                    # L-shape: vertical drop (reversed X) then horizontal
+                    # (reversed Y). Concentric curves at the corner:
+                    # outermost line gets largest radius.
                     routes.append(RoutedPath(
                         edge=edge, line_id=edge.line_id,
                         points=[
                             (sx + rev_src_off, sy),
-                            (sx + rev_src_off, ty + tgt_off),
-                            (tx, ty + tgt_off),
+                            (sx + rev_src_off, ty + rev_tgt_off),
+                            (tx, ty + rev_tgt_off),
                         ],
                         offsets_applied=True,
+                        curve_radii=[curve_radius + rev_src_off],
                     ))
             elif abs(dx) < 1.0:
                 # Nearly vertical: straight drop with Y offsets
