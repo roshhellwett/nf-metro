@@ -27,10 +27,10 @@ def cli() -> None:
               help="Visual theme (default: nfcore)")
 @click.option("--width", type=int, default=None, help="SVG width in pixels")
 @click.option("--height", type=int, default=None, help="SVG height in pixels")
-@click.option("--x-spacing", type=float, default=160.0,
-              help="Horizontal spacing between layers (default: 160)")
-@click.option("--y-spacing", type=float, default=50.0,
-              help="Vertical spacing between tracks (default: 50)")
+@click.option("--x-spacing", type=float, default=60.0,
+              help="Horizontal spacing between layers (default: 60)")
+@click.option("--y-spacing", type=float, default=40.0,
+              help="Vertical spacing between tracks (default: 40)")
 @click.option("--max-layers-per-row", type=int, default=None,
               help="Max layers before folding to next row (default: auto)")
 def render(

@@ -12,8 +12,8 @@ from nf_metro.parser.model import Edge, MetroGraph, Section, Station
 
 def compute_layout(
     graph: MetroGraph,
-    x_spacing: float = 140.0,
-    y_spacing: float = 45.0,
+    x_spacing: float = 60.0,
+    y_spacing: float = 40.0,
     x_offset: float = 80.0,
     y_offset: float = 120.0,
     max_layers_per_row: int | None = None,
@@ -40,8 +40,8 @@ def compute_layout(
 
 def _compute_section_layout(
     graph: MetroGraph,
-    x_spacing: float = 140.0,
-    y_spacing: float = 45.0,
+    x_spacing: float = 60.0,
+    y_spacing: float = 40.0,
     x_offset: float = 80.0,
     y_offset: float = 120.0,
     section_x_padding: float = 35.0,
