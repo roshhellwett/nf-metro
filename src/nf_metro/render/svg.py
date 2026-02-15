@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import drawsvg as draw
 
 from nf_metro.layout.labels import LabelPlacement, place_labels
@@ -35,11 +37,16 @@ def render_svg(
             max_x = max(max_x, section.bbox_x + section.bbox_w)
             max_y = max(max_y, section.bbox_y + section.bbox_h)
 
-    # Compute legend position based on legend_position directive
+    # Compute legend and logo dimensions
     legend_x = 0.0
     legend_y = 0.0
     legend_w, legend_h = compute_legend_dimensions(graph, theme)
     show_legend = graph.legend_position != "none" and legend_w > 0
+
+    logo_w, logo_h = (0.0, 0.0)
+    show_logo = graph.logo_path and Path(graph.logo_path).is_file()
+    if show_logo:
+        logo_w, logo_h = compute_logo_dimensions(graph.logo_path)
 
     if show_legend:
         pos = graph.legend_position
@@ -73,6 +80,19 @@ def render_svg(
         max_x = max(max_x, legend_x + legend_w)
         max_y = max(max_y, legend_y + legend_h)
 
+    # Position logo above the legend (or top-left if no legend)
+    logo_x = 0.0
+    logo_y = 0.0
+    if show_logo:
+        logo_gap = 10.0
+        if show_legend:
+            logo_x = legend_x
+            logo_y = legend_y - logo_h - logo_gap
+        else:
+            logo_x = padding
+            logo_y = 5.0
+        max_x = max(max_x, logo_x + logo_w)
+
     auto_width = max_x + padding * 2
     auto_height = max_y + padding * 2
 
@@ -84,8 +104,10 @@ def render_svg(
     # Background
     d.append(draw.Rectangle(0, 0, svg_width, svg_height, fill=theme.background_color))
 
-    # Title
-    if graph.title:
+    # Title / Logo
+    if show_logo:
+        _render_logo(d, graph.logo_path, logo_x, logo_y, logo_w, logo_h)
+    elif graph.title:
         d.append(draw.Text(
             graph.title,
             theme.title_font_size,
@@ -118,6 +140,35 @@ def render_svg(
         render_legend(d, graph, theme, legend_x, legend_y)
 
     return d.as_svg()
+
+
+def compute_logo_dimensions(
+    logo_path: str,
+    logo_height: float = 50.0,
+) -> tuple[float, float]:
+    """Compute logo display dimensions preserving aspect ratio."""
+    from PIL import Image as PILImage
+
+    img = PILImage.open(logo_path)
+    aspect = img.width / img.height
+    return logo_height * aspect, logo_height
+
+
+def _render_logo(
+    d: draw.Drawing,
+    logo_path: str,
+    x: float,
+    y: float,
+    logo_w: float,
+    logo_h: float,
+) -> None:
+    """Embed a logo image at the given position."""
+    d.append(draw.Image(
+        x, y,
+        logo_w, logo_h,
+        path=logo_path,
+        embed=True,
+    ))
 
 
 def _render_first_class_sections(

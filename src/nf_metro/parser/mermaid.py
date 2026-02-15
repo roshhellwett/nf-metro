@@ -111,6 +111,8 @@ def _parse_directive(
                 graph.sections[current_section_id].direction = direction
     elif content.startswith("grid:"):
         _parse_grid_directive(content, graph)
+    elif content.startswith("logo:"):
+        graph.logo_path = content[len("logo:"):].strip()
     elif content.startswith("legend:"):
         pos = content[len("legend:"):].strip().lower()
         if pos in ("bl", "br", "tl", "tr", "bottom", "right", "none"):
