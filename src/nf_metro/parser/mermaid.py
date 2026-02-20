@@ -265,14 +265,33 @@ def _parse_port_hint(
 
 def _parse_grid_directive(content: str, graph: MetroGraph) -> None:
     """Parse %%metro grid: section_id | col,row[,rowspan[,colspan]] directive."""
+    import warnings
+
     rest = content[len("grid:") :].strip()
     parts = rest.split("|")
     if len(parts) < 2:
+        warnings.warn(
+            f"Invalid grid directive: missing '|' separator in '{content}'. "
+            f"Expected format: %%metro grid: section_id | col,row[,rowspan[,colspan]]",
+            stacklevel=2,
+        )
         return
 
     section_id = parts[0].strip()
+    if not section_id:
+        warnings.warn(
+            f"Invalid grid directive: missing section_id in '{content}'",
+            stacklevel=2,
+        )
+        return
+
     coords = parts[1].strip().split(",")
     if len(coords) < 2:
+        warnings.warn(
+            f"Invalid grid directive for section '{section_id}': missing row in '{content}'. "
+            f"Expected format: %%metro grid: {section_id} | col,row",
+            stacklevel=2,
+        )
         return
 
     try:
@@ -280,7 +299,11 @@ def _parse_grid_directive(content: str, graph: MetroGraph) -> None:
         row = int(coords[1].strip())
         rowspan = int(coords[2].strip()) if len(coords) >= 3 else 1
         colspan = int(coords[3].strip()) if len(coords) >= 4 else 1
-    except ValueError:
+    except ValueError as e:
+        warnings.warn(
+            f"Invalid grid directive for section '{section_id}': invalid number in '{content}': {e}",
+            stacklevel=2,
+        )
         return
     graph.grid_overrides[section_id] = (col, row, rowspan, colspan)
 
@@ -304,12 +327,26 @@ _NODE_PATTERNS = [
 ]
 
 # Edge pattern: source -->|label| target  or  source --> target
+# Supports: --> (solid), --- (thick), == > (dashed), -.-> (dotted)
 _EDGE_PATTERN = re.compile(
     r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*"  # source
-    r"(-->|---|==>)"  # arrow
+    r"(==>|-\.->|-->)"  # arrow: ==> (dashed), -.-> (dotted), --> (solid), then try --- below
+    r"(?:\|([^|]*)\|)?\s*"  # optional |label|
+    r"([a-zA-Z_][a-zA-Z0-9_]*)$"  # target
+) | re.compile(
+    r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*"  # source
+    r"(---)"  # arrow: --- (thick)
     r"(?:\|([^|]*)\|)?\s*"  # optional |label|
     r"([a-zA-Z_][a-zA-Z0-9_]*)$"  # target
 )
+
+# Map arrow types to edge styles
+_ARROW_TO_STYLE = {
+    "-->": "solid",
+    "---": "thick",
+    "==>": "dashed",
+    "-.->": "dotted",
+}
 
 
 def _parse_node(
@@ -355,15 +392,23 @@ def _parse_edge(
     """Parse an edge definition line.
 
     Supports comma-separated line IDs: a -->|line1,line2,line3| b
+    Supports edge styles: --> (solid), --- (thick), ==> (dashed), -.-> (dotted)
     Creates a separate Edge for each line ID.
     """
-    m = _EDGE_PATTERN.match(line)
+    # Try main pattern first (dashed, dotted, solid), then thick pattern
+    m = _EDGE_PATTERN_1.match(line)
+    if not m:
+        m = _EDGE_PATTERN_2.match(line)
     if not m:
         return
 
     source = m.group(1)
+    arrow = m.group(2)
     label = m.group(3).strip() if m.group(3) else "default"
     target = m.group(4)
+
+    # Determine edge style from arrow type
+    edge_style = _ARROW_TO_STYLE.get(arrow, "solid")
 
     # Ensure stations exist
     if source not in graph.stations:
@@ -388,7 +433,7 @@ def _parse_edge(
     # Split comma-separated line IDs
     line_ids = [lid.strip() for lid in label.split(",")]
     for line_id in line_ids:
-        graph.add_edge(Edge(source=source, target=target, line_id=line_id))
+        graph.add_edge(Edge(source=source, target=target, line_id=line_id, style=edge_style))
 
 
 def _remove_empty_sections(graph: MetroGraph) -> None:

@@ -49,6 +49,7 @@ class Edge:
     source: str
     target: str
     line_id: str
+    style: str = "solid"  # "solid", "dashed", or "dotted"
 
 
 @dataclass
@@ -166,14 +167,17 @@ class MetroGraph:
             section_id=port.section_id,
             is_port=True,
         )
-        # Register with the section
+        # Register with the section (avoid duplicates)
         section = self.sections.get(port.section_id)
         if section:
-            section.station_ids.append(port.id)
+            if port.id not in section.station_ids:
+                section.station_ids.append(port.id)
             if port.is_entry:
-                section.entry_ports.append(port.id)
+                if port.id not in section.entry_ports:
+                    section.entry_ports.append(port.id)
             else:
-                section.exit_ports.append(port.id)
+                if port.id not in section.exit_ports:
+                    section.exit_ports.append(port.id)
 
     def station_lines(self, station_id: str) -> list[str]:
         """Return line IDs that pass through a station."""

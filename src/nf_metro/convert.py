@@ -316,12 +316,16 @@ def _humanize_label(name: str, abbreviate: bool = True) -> str:
     return " ".join(words)
 
 
-def _sanitize_id(name: str) -> str:
+def _sanitize_id(name: str, fallback: str = "node") -> str:
     """Convert a process/section name to a valid nf-metro station ID.
 
     Lowercase, replace non-alphanumeric with underscore.
+    If the result is empty, uses the fallback prefix with a counter.
     """
-    return re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_")
+    result = re.sub(r"[^a-z0-9_]", "_", name.lower()).strip("_")
+    if not result:
+        result = f"{fallback}_{hash(name) % 10000}"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -567,8 +571,8 @@ def convert_nextflow_dag(text: str, title: str = "") -> str:
         # Station declarations
         for nid in ordered_nodes:
             node = dag.nodes[nid]
-            station_id = _sanitize_id(node.label)
-            label = _humanize_label(node.label)
+            station_id = _sanitize_id(node.label, fallback=f"proc{nid}")
+            label = _humanize_label(node.label) or station_id
             out.append(f"        {station_id}([{label}])")
 
         # Intra-section edges
@@ -576,8 +580,8 @@ def convert_nextflow_dag(text: str, title: str = "") -> str:
         if sec_edges:
             out.append("")
             for src, tgt in sec_edges:
-                src_label = _sanitize_id(dag.nodes[src].label)
-                tgt_label = _sanitize_id(dag.nodes[tgt].label)
+                src_label = _sanitize_id(dag.nodes[src].label, fallback=f"proc{src}")
+                tgt_label = _sanitize_id(dag.nodes[tgt].label, fallback=f"proc{tgt}")
                 lid = edge_line.get((src, tgt), main_line_id)
                 out.append(f"        {src_label} -->|{lid}| {tgt_label}")
 
@@ -592,8 +596,8 @@ def convert_nextflow_dag(text: str, title: str = "") -> str:
     if all_inter:
         out.append("    %% Inter-section edges")
         for src, tgt in all_inter:
-            src_label = _sanitize_id(dag.nodes[src].label)
-            tgt_label = _sanitize_id(dag.nodes[tgt].label)
+            src_label = _sanitize_id(dag.nodes[src].label, fallback=f"proc{src}")
+            tgt_label = _sanitize_id(dag.nodes[tgt].label, fallback=f"proc{tgt}")
             lid = edge_line.get((src, tgt), main_line_id)
             out.append(f"    {src_label} -->|{lid}| {tgt_label}")
 

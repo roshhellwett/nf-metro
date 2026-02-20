@@ -501,11 +501,31 @@ def _render_edges(
         src_off = station_offsets.get((route.edge.source, route.line_id), 0.0)
         return -(route.points[0][1] + src_off)
 
+    def _get_stroke_dasharray(style: str) -> str:
+        """Get SVG stroke-dasharray for edge style."""
+        if style == "dashed":
+            return "10,5"
+        elif style == "dotted":
+            return "2,4"
+        elif style == "thick":
+            return ""
+        return ""
+
     routes = sorted(routes, key=_sort_key)
 
     for route in routes:
         line = graph.lines.get(route.line_id)
         color = line.color if line else FALLBACK_LINE_COLOR
+
+        # Get edge style from the original edge
+        edge = route.edge
+        edge_style = getattr(edge, "style", "solid") if edge else "solid"
+        stroke_dasharray = _get_stroke_dasharray(edge_style)
+
+        # Adjust width for thick lines
+        line_width = theme.line_width
+        if edge_style == "thick":
+            line_width = theme.line_width * 2
 
         pts = apply_route_offsets(route, station_offsets)
 
@@ -517,17 +537,19 @@ def _render_edges(
                     pts[1][0],
                     pts[1][1],
                     stroke=color,
-                    stroke_width=theme.line_width,
+                    stroke_width=line_width,
                     stroke_linecap="round",
+                    stroke_dasharray=stroke_dasharray if stroke_dasharray else None,
                 )
             )
         elif len(pts) >= 3:
             path = draw.Path(
                 stroke=color,
-                stroke_width=theme.line_width,
+                stroke_width=line_width,
                 fill="none",
                 stroke_linecap="round",
                 stroke_linejoin="round",
+                stroke_dasharray=stroke_dasharray if stroke_dasharray else None,
             )
             path.M(*pts[0])
 
